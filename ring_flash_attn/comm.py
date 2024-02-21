@@ -2,9 +2,9 @@ import torch
 import torch.distributed as dist
 
 
-def send_recv_kv(
-    process_group, local_k, local_v, step, rank, world_size, causal, is_grad=False
-):
+def send_recv_kv(process_group, local_k, local_v, step, causal, is_grad=False):
+    rank = dist.get_rank(process_group)
+    world_size = dist.get_world_size(process_group)
     if step == 0:
         assert is_grad
         return None, None, rank, None

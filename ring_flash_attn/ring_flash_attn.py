@@ -39,7 +39,7 @@ def ring_flash_attn_forward(
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
         next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-            process_group, local_k, local_v, step + 1, rank, world_size, causal
+            process_group, local_k, local_v, step + 1, causal
         )
         if k is not None:
             assert not causal or kv_rank <= rank
@@ -125,7 +125,7 @@ def ring_flash_attn_backward(
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
         next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-            process_group, local_k, local_v, step + 1, rank, world_size, causal
+            process_group, local_k, local_v, step + 1, causal
         )
         if k is not None:
             assert not causal or kv_rank <= rank
@@ -172,8 +172,6 @@ def ring_flash_attn_backward(
             block_dk,
             block_dv,
             step,
-            rank,
-            world_size,
             causal,
             is_grad=True,
         )
