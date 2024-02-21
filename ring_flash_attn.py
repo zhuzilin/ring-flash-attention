@@ -4,7 +4,9 @@ from raw_flash_attn import raw_flash_attn_forward, raw_flash_attn_backward
 
 
 def ring_flash_attn_forward(
-    local_qkv,
+    local_q,
+    local_k,
+    local_v,
     dropout_p=0,
     causal=True,
     window_size=(-1, -1),
@@ -14,9 +16,9 @@ def ring_flash_attn_forward(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    local_q = local_qkv[:, :, 0]
-    local_k = local_qkv[:, :, 1].contiguous()
-    local_v = local_qkv[:, :, 2].contiguous()
+    local_q = local_q.contiguous()
+    local_k = local_k.contiguous()
+    local_v = local_v.contiguous()
 
     ks = [torch.zeros_like(local_k) for _ in range(world_size)]
     vs = [torch.zeros_like(local_v) for _ in range(world_size)]
@@ -58,7 +60,9 @@ def ring_flash_attn_forward(
 
 def ring_flash_attn_backward(
     local_dout,
-    local_qkv,
+    local_q,
+    local_k,
+    local_v,
     local_out,
     softmax_lse,
     dropout_p=0,
@@ -70,9 +74,11 @@ def ring_flash_attn_backward(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    local_q = local_qkv[:, :, 0]
-    local_k = local_qkv[:, :, 1].contiguous()
-    local_v = local_qkv[:, :, 2].contiguous()
+    local_dout = local_dout.contiguous()
+    local_q = local_q.contiguous()
+    local_k = local_k.contiguous()
+    local_v = local_v.contiguous()
+    local_out = local_out.contiguous()
 
     ks = [torch.zeros_like(local_k) for _ in range(world_size)]
     vs = [torch.zeros_like(local_v) for _ in range(world_size)]

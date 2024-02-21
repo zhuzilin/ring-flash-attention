@@ -58,6 +58,9 @@ if __name__ == "__main__":
     dist.broadcast(dout, src=0)
 
     local_qkv = qkv.chunk(world_size, dim=1)[rank]
+    local_q = local_qkv[:, :, 0]
+    local_k = local_qkv[:, :, 1]
+    local_v = local_qkv[:, :, 2]
     local_dout = dout.chunk(world_size, dim=1)[rank]
 
     dist.barrier()
@@ -80,7 +83,9 @@ if __name__ == "__main__":
     local_lse = lse.chunk(world_size, dim=-1)[rank]
 
     ring_out, ring_lse = ring_flash_attn_forward(
-        local_qkv,
+        local_q,
+        local_k,
+        local_v,
         dropout_p=dropout_p,
         causal=causal,
         window_size=(-1, -1),
@@ -105,7 +110,9 @@ if __name__ == "__main__":
 
     ring_dq, ring_dk, ring_dv = ring_flash_attn_backward(
         local_dout,
-        local_qkv,
+        local_q,
+        local_k,
+        local_v,
         ring_out,
         softmax_lse=ring_lse,
         dropout_p=dropout_p,
