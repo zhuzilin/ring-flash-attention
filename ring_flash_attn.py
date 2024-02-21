@@ -28,8 +28,9 @@ def ring_flash_attn_forward(
 
     out = None
     lse = None
-    end = rank + 1 if causal else world_size
-    for i in range(end):
+    for i in range(world_size):
+        if causal and rank < i:
+            continue
         local_causal = causal and i == rank
         k = ks[i]
         v = vs[i]
@@ -90,8 +91,13 @@ def ring_flash_attn_backward(
     local_dq = None
     dks = []
     dvs = []
-    end = rank + 1 if causal else world_size
-    for i in range(end):
+
+    for i in range(world_size):
+        if causal and rank < i:
+            dks.append(torch.zeros_like(block_dk))
+            dvs.append(torch.zeros_like(block_dv))
+            continue
+
         local_causal = causal and i == rank
         k = ks[i]
         v = vs[i]
@@ -120,10 +126,6 @@ def ring_flash_attn_backward(
             local_dq += block_dq
         dks.append(block_dk)
         dvs.append(block_dv)
-
-    for i in range(end, world_size):
-        dks.append(torch.zeros_like(block_dk))
-        dvs.append(torch.zeros_like(block_dv))
 
     dks = torch.cat(dks, dim=1)
     dvs = torch.cat(dvs, dim=1)
