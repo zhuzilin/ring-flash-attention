@@ -1,1 +1,2 @@
-from .ring_flash_attn import ring_flash_attn_qkvpacked_func
+from .ring_flash_attn_qkvpacked import ring_flash_attn_qkvpacked_func
+from .ring_flash_attn_varlen_qkvpacked import ring_flash_attn_varlen_qkvpacked_func

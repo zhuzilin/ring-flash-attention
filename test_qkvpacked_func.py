@@ -31,6 +31,12 @@ def log(msg, a, rank0_only=False):
 
 
 if __name__ == "__main__":
+    dist.init_process_group("nccl")
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    dtype = torch.bfloat16
+    device = torch.device(f"cuda:{rank}")
+
     batch_size = 1
     seqlen = 3816
     nheads = 5
@@ -38,13 +44,6 @@ if __name__ == "__main__":
     dropout_p = 0
     causal = True
     deterministic = False
-
-    dist.init_process_group("nccl")
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-
-    dtype = torch.bfloat16
-    device = torch.device(f"cuda:{rank}")
 
     assert seqlen % world_size == 0
     assert d % 8 == 0
@@ -69,7 +68,7 @@ if __name__ == "__main__":
 
     out, lse, _ = flash_attn_qkvpacked_func(
         qkv,
-        dropout_p,
+        dropout_p=dropout_p,
         causal=causal,
         window_size=(-1, -1),
         alibi_slopes=None,

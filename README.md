@@ -1,6 +1,9 @@
 ## Ring Flash Attention
 
-This repo implements the [RingAttention](https://github.com/lhao499/RingAttention) with [FlashAttention](https://github.com/Dao-AILab/flash-attention). Currently, the `ring_flash_attn_qkvpacked_func`, corresponding to `flash_attn_qkvpacked_func`, is implemented.
+This repo implements the [RingAttention](https://github.com/lhao499/RingAttention) with [FlashAttention](https://github.com/Dao-AILab/flash-attention). Currently, this repo implements:
+
+- `ring_flash_attn_qkvpacked_func`: corresponding to `flash_attn_qkvpacked_func`
+-  `ring_flash_attn_varlen_qkvpacked_func`: corresponding to `flash_attn_varlen_qkvpacked_func`
 
 The main idea is to use the `softmax_lse` output from the flash attention kernels.
 
@@ -8,10 +11,12 @@ There are some arithmetic errors with the current implementation. The reason for
 
 ### TODOs
 
-- [ ] Implement `ring_flash_attn_varlen_qkvpacked_func`
+- [x] Implement `ring_flash_attn_varlen_qkvpacked_func`
+- [ ] Try to upstream to flash attention.
 
 ### Test
 
 ```bash
-torchrun --nproc_per_node 8 test.py
+torchrun --nproc_per_node 8 test_qkvpacked_func.py
+torchrun --nproc_per_node 8 test_varlen_qkvpacked_func.py
 ```
