@@ -47,19 +47,18 @@ if __name__ == "__main__":
     device = torch.device(f"cuda:{rank}")
 
     assert seqlen % world_size == 0
+    assert d % 8 == 0
 
     qkv = torch.randn(
         batch_size, seqlen, 3, nheads, d, device=device, dtype=dtype, requires_grad=True
     )
     dist.broadcast(qkv, src=0)
 
-    dout = torch.randn(
-        batch_size, seqlen, nheads, d, device=device, dtype=dtype
-    )
+    dout = torch.randn(batch_size, seqlen, nheads, d, device=device, dtype=dtype)
     dist.broadcast(dout, src=0)
 
     local_qkv = qkv.chunk(world_size, dim=1)[rank].detach().clone()
-    local_qkv.requires_grad=True
+    local_qkv.requires_grad = True
     local_dout = dout.chunk(world_size, dim=1)[rank].detach().clone()
 
     dist.barrier()

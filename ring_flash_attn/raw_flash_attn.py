@@ -48,7 +48,6 @@ def raw_flash_attn_backward(
 ):
     if softmax_scale is None:
         softmax_scale = q.shape[-1] ** (-0.5)
-    #qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
     dq = torch.empty(q.shape, dtype=q.dtype, device=q.device)
     dk = torch.empty(k.shape, dtype=k.dtype, device=k.device)
     dv = torch.empty(v.shape, dtype=v.dtype, device=v.device)
@@ -70,5 +69,4 @@ def raw_flash_attn_backward(
         deterministic,
         rng_state=rng_state,
     )
-    #dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
     return dq, dk, dv

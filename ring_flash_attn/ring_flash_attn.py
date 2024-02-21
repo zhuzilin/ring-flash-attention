@@ -3,7 +3,9 @@ import torch.distributed as dist
 from .raw_flash_attn import raw_flash_attn_forward, raw_flash_attn_backward
 
 
-def send_recv_kv(process_group, local_k, local_v, step, rank, world_size, causal, is_grad=False):
+def send_recv_kv(
+    process_group, local_k, local_v, step, rank, world_size, causal, is_grad=False
+):
     if step == 0:
         assert is_grad
         return None, None, rank, None
@@ -14,9 +16,9 @@ def send_recv_kv(process_group, local_k, local_v, step, rank, world_size, causal
     need_to_send = not (causal and step + rank >= world_size)
 
     if is_grad:
-       # when sending grad, we need to reverse send and recv
-       send_rank, recv_rank = recv_rank, send_rank
-       need_to_recv, need_to_send = need_to_send, need_to_recv
+        # when sending grad, we need to reverse send and recv
+        send_rank, recv_rank = recv_rank, send_rank
+        need_to_recv, need_to_send = need_to_send, need_to_recv
 
     ops = []
     if need_to_recv:
@@ -35,7 +37,7 @@ def send_recv_kv(process_group, local_k, local_v, step, rank, world_size, causal
         reqs = dist.batch_isend_irecv(ops)
     else:
         reqs = None
-    
+
     if not need_to_recv:
         return None, None, None, reqs
     return remote_k, remote_v, recv_rank, reqs
@@ -71,7 +73,9 @@ def ring_flash_attn_forward(
             for req in reqs:
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
-        next_k, next_v, next_kv_rank, reqs = send_recv_kv(process_group, local_k, local_v, step + 1, rank, world_size, causal)
+        next_k, next_v, next_kv_rank, reqs = send_recv_kv(
+            process_group, local_k, local_v, step + 1, rank, world_size, causal
+        )
         if k is not None:
             assert not causal or kv_rank <= rank
             local_causal = causal and kv_rank == rank
@@ -93,7 +97,10 @@ def ring_flash_attn_forward(
                 lse = block_lse
             else:
                 new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
-                out = torch.exp(lse - new_lse) * out + torch.exp(block_lse - new_lse) * block_out
+                out = (
+                    torch.exp(lse - new_lse) * out
+                    + torch.exp(block_lse - new_lse) * block_out
+                )
                 lse = new_lse
 
     out = out.to(torch.bfloat16)
@@ -141,7 +148,9 @@ def ring_flash_attn_backward(
             for req in reqs:
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
-        next_k, next_v, next_kv_rank, reqs = send_recv_kv(process_group, local_k, local_v, step + 1, rank, world_size, causal)
+        next_k, next_v, next_kv_rank, reqs = send_recv_kv(
+            process_group, local_k, local_v, step + 1, rank, world_size, causal
+        )
         if k is not None:
             assert not causal or kv_rank <= rank
             local_causal = causal and kv_rank == rank
@@ -177,7 +186,16 @@ def ring_flash_attn_backward(
                 local_dk += remote_dk
                 local_dv += remote_dv
 
-        remote_dk, remote_dv, _, grad_reqs = send_recv_kv(process_group, block_dk, block_dv, step, rank, world_size, causal, is_grad=True)
+        remote_dk, remote_dv, _, grad_reqs = send_recv_kv(
+            process_group,
+            block_dk,
+            block_dv,
+            step,
+            rank,
+            world_size,
+            causal,
+            is_grad=True,
+        )
 
     if grad_reqs is not None:
         for req in grad_reqs:
@@ -263,7 +281,7 @@ def ring_flash_attn_qkvpacked_func(
     alibi_slopes=None,
     deterministic=False,
     return_attn_probs=False,
-    group=None
+    group=None,
 ):
     return RingFlashAttnQKVPackedFunc.apply(
         qkv,
