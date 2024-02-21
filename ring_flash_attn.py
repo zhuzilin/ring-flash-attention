@@ -124,18 +124,24 @@ def ring_flash_attn_backward(
     dist.all_gather(vs, local_v)
 
     local_dq = None
-    dks = []
-    dvs = []
+    dks = [None] * world_size
+    dvs = [None] * world_size
 
-    for i in range(world_size):
-        if causal and rank < i:
-            dks.append(torch.zeros_like(block_dk))
-            dvs.append(torch.zeros_like(block_dv))
+    next_k = local_k
+    next_v = local_v
+    next_kv_rank = rank
+    reqs = None
+    for step in range(world_size):
+        if reqs is not None:
+            for req in reqs:
+                req.wait()
+        k, v, kv_rank = next_k, next_v, next_kv_rank
+        next_k, next_v, next_kv_rank, reqs = get_kv(local_k, local_v, step + 1, rank, world_size, causal)
+        if k is None:
+            assert v is None
             continue
-
-        local_causal = causal and i == rank
-        k = ks[i]
-        v = vs[i]
+        assert not causal or kv_rank <= rank
+        local_causal = causal and kv_rank == rank
         block_dq, block_dk, block_dv = raw_flash_attn_backward(
             local_dout,
             local_q,
@@ -159,8 +165,11 @@ def ring_flash_attn_backward(
             local_dq = block_dq
         else:
             local_dq += block_dq
-        dks.append(block_dk)
-        dvs.append(block_dv)
+        dks[kv_rank] = block_dk
+        dvs[kv_rank] = block_dv
+
+    dks = [dk if dk is not None else torch.zeros_like(local_k) for dk in dks]
+    dvs = [dv if dv is not None else torch.zeros_like(local_v) for dv in dvs]
 
     dks = torch.cat(dks, dim=1)
     dvs = torch.cat(dvs, dim=1)
