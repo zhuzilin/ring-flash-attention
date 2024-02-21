@@ -28,7 +28,8 @@ def ring_flash_attn_forward(
 
     out = None
     lse = None
-    for i in range(rank + 1):
+    end = rank + 1 if causal else world_size
+    for i in range(end):
         local_causal = causal and i == rank
         k = ks[i]
         v = vs[i]
@@ -89,7 +90,8 @@ def ring_flash_attn_backward(
     local_dq = None
     dks = []
     dvs = []
-    for i in range(rank + 1):
+    end = rank + 1 if causal else world_size
+    for i in range(end):
         local_causal = causal and i == rank
         k = ks[i]
         v = vs[i]
@@ -119,7 +121,7 @@ def ring_flash_attn_backward(
         dks.append(block_dk)
         dvs.append(block_dv)
 
-    for i in range(rank + 1, world_size):
+    for i in range(end, world_size):
         dks.append(torch.zeros_like(block_dk))
         dvs.append(torch.zeros_like(block_dv))
 
@@ -132,3 +134,86 @@ def ring_flash_attn_backward(
     local_dv = dvs.chunk(world_size, dim=1)[rank]
 
     return local_dq, local_dk, local_dv
+
+
+class RingFlashAttnQKVPackedFunc(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        qkv,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        alibi_slopes,
+        deterministic,
+        return_softmax,
+    ):
+        if softmax_scale is None:
+            softmax_scale = qkv.shape[-1] ** (-0.5)
+
+        assert alibi_slopes is None
+        q = qkv[:, :, 0].contiguous()
+        k = qkv[:, :, 1].contiguous()
+        v = qkv[:, :, 2].contiguous()
+        out, softmax_lse = ring_flash_attn_forward(
+            q,
+            k,
+            v,
+            dropout_p=dropout_p,
+            causal=causal,
+            window_size=window_size,
+            alibi_slopes=alibi_slopes,
+            deterministic=False,
+        )
+        # this should be out_padded
+        ctx.save_for_backward(q, k, v, out, softmax_lse)
+        ctx.dropout_p = dropout_p
+        ctx.softmax_scale = softmax_scale
+        ctx.causal = causal
+        ctx.window_size = window_size
+        ctx.alibi_slopes = alibi_slopes
+        ctx.deterministic = deterministic
+        return out if not return_softmax else (out, softmax_lse, None)
+
+    @staticmethod
+    def backward(ctx, dout, *args):
+        q, k, v, out, softmax_lse = ctx.saved_tensors
+        dq, dk, dv = ring_flash_attn_backward(
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            dropout_p=ctx.dropout_p,
+            causal=ctx.causal,
+            window_size=ctx.window_size,
+            alibi_slopes=ctx.alibi_slopes,
+            deterministic=ctx.deterministic,
+        )
+        dqkv = torch.stack([dq, dk, dv], dim=2)
+        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
+        return dqkv, None, None, None, None, None, None, None
+
+
+def ring_flash_attn_qkvpacked_func(
+    qkv,
+    dropout_p=0.0,
+    softmax_scale=None,
+    causal=False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    alibi_slopes=None,
+    deterministic=False,
+    return_attn_probs=False,
+):
+    return RingFlashAttnQKVPackedFunc.apply(
+        qkv,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        alibi_slopes,
+        deterministic,
+        return_attn_probs,
+    )

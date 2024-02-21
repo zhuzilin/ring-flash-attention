@@ -1,7 +1,7 @@
 from flash_attn import flash_attn_qkvpacked_func
 import torch
 import torch.distributed as dist
-from ring_flash_attn import ring_flash_attn_forward, ring_flash_attn_backward
+from ring_flash_attn import ring_flash_attn_qkvpacked_func
 
 
 def log(msg, a, rank0_only=False):
@@ -12,7 +12,8 @@ def log(msg, a, rank0_only=False):
             print(
                 f"{msg}: "
                 f"max {a.abs().max().item()}, "
-                f"mean {a.abs().mean().item()}"
+                f"mean {a.abs().mean().item()}",
+                flush=True,
             )
         return
 
@@ -23,7 +24,8 @@ def log(msg, a, rank0_only=False):
             print(
                 f"[{rank}] "
                 f"max {a.abs().max().item()}, "
-                f"mean {a.abs().mean().item()}"
+                f"mean {a.abs().mean().item()}",
+                flush=True,
             )
         dist.barrier()
 
@@ -44,7 +46,7 @@ if __name__ == "__main__":
     d = 128
 
     dropout_p = 0
-    causal = True
+    causal = False
     deterministic = False
 
     qkv = torch.randn(
@@ -53,15 +55,13 @@ if __name__ == "__main__":
     dist.broadcast(qkv, src=0)
 
     dout = torch.randn(
-        batch_size, seqlen, nheads, d, device=device, dtype=dtype, requires_grad=True
+        batch_size, seqlen, nheads, d, device=device, dtype=dtype
     )
     dist.broadcast(dout, src=0)
 
-    local_qkv = qkv.chunk(world_size, dim=1)[rank]
-    local_q = local_qkv[:, :, 0]
-    local_k = local_qkv[:, :, 1]
-    local_v = local_qkv[:, :, 2]
-    local_dout = dout.chunk(world_size, dim=1)[rank]
+    local_qkv = qkv.chunk(world_size, dim=1)[rank].detach().clone()
+    local_qkv.requires_grad=True
+    local_dout = dout.chunk(world_size, dim=1)[rank].detach().clone()
 
     dist.barrier()
     if rank == 0:
@@ -82,15 +82,14 @@ if __name__ == "__main__":
     local_out = out.chunk(world_size, dim=1)[rank]
     local_lse = lse.chunk(world_size, dim=-1)[rank]
 
-    ring_out, ring_lse = ring_flash_attn_forward(
-        local_q,
-        local_k,
-        local_v,
+    ring_out, ring_lse, _ = ring_flash_attn_qkvpacked_func(
+        local_qkv,
         dropout_p=dropout_p,
         causal=causal,
         window_size=(-1, -1),
         alibi_slopes=None,
         deterministic=deterministic,
+        return_attn_probs=True,
     )
 
     log("out", out, rank0_only=True)
@@ -108,25 +107,14 @@ if __name__ == "__main__":
     dqkv = qkv.grad
     local_dqkv = dqkv.chunk(world_size, dim=1)[rank]
 
-    ring_dq, ring_dk, ring_dv = ring_flash_attn_backward(
-        local_dout,
-        local_q,
-        local_k,
-        local_v,
-        ring_out,
-        softmax_lse=ring_lse,
-        dropout_p=dropout_p,
-        causal=causal,
-        window_size=(-1, -1),
-        alibi_slopes=None,
-        deterministic=deterministic,
-    )
+    ring_out.backward(local_dout)
+    ring_dqkv = local_qkv.grad
 
     log("load_dq", local_dqkv[:, :, 0, :])
-    log("dq diff", local_dqkv[:, :, 0, :] - ring_dq)
+    log("dq diff", local_dqkv[:, :, 0, :] - ring_dqkv[:, :, 0, :])
 
     log("load_dk", local_dqkv[:, :, 1, :])
-    log("dk diff", local_dqkv[:, :, 1, :] - ring_dk)
+    log("dk diff", local_dqkv[:, :, 1, :] - ring_dqkv[:, :, 1, :])
 
     log("load_dv", local_dqkv[:, :, 2, :])
-    log("dv diff", local_dqkv[:, :, 2, :] - ring_dv)
+    log("dv diff", local_dqkv[:, :, 2, :] - ring_dqkv[:, :, 2, :])
