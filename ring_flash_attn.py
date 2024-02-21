@@ -3,6 +3,37 @@ import torch.distributed as dist
 from raw_flash_attn import raw_flash_attn_forward, raw_flash_attn_backward
 
 
+def get_kv(local_k, local_v, step, rank, world_size, causal):
+    if step == 0:
+        return local_k, local_v, rank
+    send_rank = (rank + step) % world_size
+    recv_rank = (rank - step) % world_size
+
+    need_to_recv = not (causal and step > rank)
+    need_to_send = not (causal and step + rank >= world_size)
+    ops = []
+    if need_to_recv:
+        remote_k = torch.empty_like(local_k)
+        remote_v = torch.empty_like(local_v)
+        recv_k = dist.P2POp(dist.irecv, remote_k, recv_rank)
+        recv_v = dist.P2POp(dist.irecv, remote_v, recv_rank)
+        ops += [recv_k, recv_v]
+    if need_to_send:
+        # need to send
+        send_k = dist.P2POp(dist.isend, local_k, send_rank)
+        send_v = dist.P2POp(dist.isend, local_v, send_rank)
+        ops += [send_k, send_v]
+
+    if need_to_recv or need_to_send:
+        reqs = dist.batch_isend_irecv(ops)
+    else:
+        reqs = None
+    
+    if not need_to_recv:
+        return None, None, None, reqs
+    return remote_k, remote_v, recv_rank, reqs
+
+
 def ring_flash_attn_forward(
     local_q,
     local_k,
@@ -20,20 +51,24 @@ def ring_flash_attn_forward(
     local_k = local_k.contiguous()
     local_v = local_v.contiguous()
 
-    ks = [torch.zeros_like(local_k) for _ in range(world_size)]
-    vs = [torch.zeros_like(local_v) for _ in range(world_size)]
-
-    dist.all_gather(ks, local_k)
-    dist.all_gather(vs, local_v)
-
     out = None
     lse = None
-    for i in range(world_size):
-        if causal and rank < i:
+
+    next_k = local_k
+    next_v = local_v
+    next_kv_rank = rank
+    reqs = None
+    for step in range(world_size):
+        if reqs is not None:
+            for req in reqs:
+                req.wait()
+        k, v, kv_rank = next_k, next_v, next_kv_rank
+        next_k, next_v, next_kv_rank, reqs = get_kv(local_k, local_v, step + 1, rank, world_size, causal)
+        if k is None:
+            assert v is None
             continue
-        local_causal = causal and i == rank
-        k = ks[i]
-        v = vs[i]
+        assert not causal or kv_rank <= rank
+        local_causal = causal and kv_rank == rank
         block_out, block_lse, _ = raw_flash_attn_forward(
             local_q,
             k,
