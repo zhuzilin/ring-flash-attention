@@ -13,5 +13,5 @@ There are some arithmetic errors with the current implementation. The reason for
 ### Test
 
 ```bash
-python test.py
+torchrun --nproc_per_node 8 test.py
 ```

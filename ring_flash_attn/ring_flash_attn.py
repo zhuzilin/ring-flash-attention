@@ -1,46 +1,7 @@
 import torch
 import torch.distributed as dist
-from .raw_flash_attn import raw_flash_attn_forward, raw_flash_attn_backward
-
-
-def send_recv_kv(
-    process_group, local_k, local_v, step, rank, world_size, causal, is_grad=False
-):
-    if step == 0:
-        assert is_grad
-        return None, None, rank, None
-    send_rank = (rank + step) % world_size
-    recv_rank = (rank - step) % world_size
-
-    need_to_recv = not (causal and step > rank)
-    need_to_send = not (causal and step + rank >= world_size)
-
-    if is_grad:
-        # when sending grad, we need to reverse send and recv
-        send_rank, recv_rank = recv_rank, send_rank
-        need_to_recv, need_to_send = need_to_send, need_to_recv
-
-    ops = []
-    if need_to_recv:
-        remote_k = torch.empty_like(local_k)
-        remote_v = torch.empty_like(local_v)
-        recv_k = dist.P2POp(dist.irecv, remote_k, recv_rank, group=process_group)
-        recv_v = dist.P2POp(dist.irecv, remote_v, recv_rank, group=process_group)
-        ops += [recv_k, recv_v]
-    if need_to_send:
-        # need to send
-        send_k = dist.P2POp(dist.isend, local_k, send_rank, group=process_group)
-        send_v = dist.P2POp(dist.isend, local_v, send_rank, group=process_group)
-        ops += [send_k, send_v]
-
-    if need_to_recv or need_to_send:
-        reqs = dist.batch_isend_irecv(ops)
-    else:
-        reqs = None
-
-    if not need_to_recv:
-        return None, None, None, reqs
-    return remote_k, remote_v, recv_rank, reqs
+from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
+from .comm import send_recv_kv
 
 
 def ring_flash_attn_forward(
@@ -48,6 +9,7 @@ def ring_flash_attn_forward(
     local_q,
     local_k,
     local_v,
+    softmax_scale,
     dropout_p=0,
     causal=True,
     window_size=(-1, -1),
@@ -61,9 +23,12 @@ def ring_flash_attn_forward(
     local_k = local_k.contiguous()
     local_v = local_v.contiguous()
 
+    assert local_q.shape[-1] % 8 == 0, "unpadded head size not supported"
+    if softmax_scale is None:
+        softmax_scale = local_q.shape[-1] ** (-0.5)
+
     out = None
     lse = None
-
     next_k = local_k
     next_v = local_v
     next_kv_rank = rank
@@ -79,16 +44,16 @@ def ring_flash_attn_forward(
         if k is not None:
             assert not causal or kv_rank <= rank
             local_causal = causal and kv_rank == rank
-            block_out, block_lse, _ = raw_flash_attn_forward(
+            block_out, _, _, _, _, block_lse, _, _ = _flash_attn_forward(
                 local_q,
                 k,
                 v,
                 dropout_p,
+                softmax_scale,
                 causal=local_causal,
                 window_size=window_size,
                 alibi_slopes=alibi_slopes,
-                deterministic=deterministic,
-                return_softmax=True,
+                return_softmax=True and dropout_p > 0,
             )
             block_out = block_out.to(torch.float32)
             block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
@@ -116,6 +81,7 @@ def ring_flash_attn_backward(
     local_v,
     local_out,
     softmax_lse,
+    softmax_scale,
     dropout_p=0,
     causal=True,
     window_size=(-1, -1),
@@ -140,6 +106,16 @@ def ring_flash_attn_backward(
     next_kv_rank = rank
     reqs = None
 
+    block_dq_buffer = torch.empty(
+        local_q.shape, dtype=local_q.dtype, device=local_q.device
+    )
+    block_dk_buffer = torch.empty(
+        local_k.shape, dtype=local_k.dtype, device=local_k.device
+    )
+    block_dv_buffer = torch.empty(
+        local_v.shape, dtype=local_v.dtype, device=local_v.device
+    )
+
     remote_dk = None
     remote_dv = None
     grad_reqs = None
@@ -154,24 +130,29 @@ def ring_flash_attn_backward(
         if k is not None:
             assert not causal or kv_rank <= rank
             local_causal = causal and kv_rank == rank
-            block_dq, block_dk, block_dv = raw_flash_attn_backward(
+
+            _flash_attn_backward(
                 local_dout,
                 local_q,
                 k,
                 v,
                 local_out,
                 softmax_lse,
+                block_dq_buffer,
+                block_dk_buffer,
+                block_dv_buffer,
+                dropout_p,
+                softmax_scale,
+                local_causal,
+                window_size,
+                alibi_slopes,
+                deterministic,
                 rng_state=None,
-                dropout_p=dropout_p,
-                causal=local_causal,
-                window_size=window_size,
-                alibi_slopes=alibi_slopes,
-                deterministic=deterministic,
-                softmax_scale=None,
             )
-            block_dq = block_dq.to(torch.float32)
-            block_dk = block_dk.to(torch.float32)
-            block_dv = block_dv.to(torch.float32)
+
+            block_dq = block_dq_buffer.to(torch.float32)
+            block_dk = block_dk_buffer.to(torch.float32)
+            block_dv = block_dv_buffer.to(torch.float32)
 
             if local_dq is None:
                 local_dq = block_dq
@@ -233,6 +214,7 @@ class RingFlashAttnQKVPackedFunc(torch.autograd.Function):
             q,
             k,
             v,
+            softmax_scale=softmax_scale,
             dropout_p=dropout_p,
             causal=causal,
             window_size=window_size,
@@ -261,6 +243,7 @@ class RingFlashAttnQKVPackedFunc(torch.autograd.Function):
             v,
             out,
             softmax_lse,
+            softmax_scale=ctx.softmax_scale,
             dropout_p=ctx.dropout_p,
             causal=ctx.causal,
             window_size=ctx.window_size,
