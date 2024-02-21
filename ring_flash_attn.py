@@ -3,14 +3,21 @@ import torch.distributed as dist
 from raw_flash_attn import raw_flash_attn_forward, raw_flash_attn_backward
 
 
-def get_kv(local_k, local_v, step, rank, world_size, causal):
+def send_recv_kv(local_k, local_v, step, rank, world_size, causal, is_grad=False):
     if step == 0:
-        return local_k, local_v, rank
+        assert is_grad
+        return None, None, rank, None
     send_rank = (rank + step) % world_size
     recv_rank = (rank - step) % world_size
 
     need_to_recv = not (causal and step > rank)
     need_to_send = not (causal and step + rank >= world_size)
+
+    if is_grad:
+       # when sending grad, we need to reverse send and recv
+       send_rank, recv_rank = recv_rank, send_rank
+       need_to_recv, need_to_send = need_to_send, need_to_recv
+
     ops = []
     if need_to_recv:
         remote_k = torch.empty_like(local_k)
@@ -63,32 +70,30 @@ def ring_flash_attn_forward(
             for req in reqs:
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
-        next_k, next_v, next_kv_rank, reqs = get_kv(local_k, local_v, step + 1, rank, world_size, causal)
-        if k is None:
-            assert v is None
-            continue
-        assert not causal or kv_rank <= rank
-        local_causal = causal and kv_rank == rank
-        block_out, block_lse, _ = raw_flash_attn_forward(
-            local_q,
-            k,
-            v,
-            dropout_p,
-            causal=local_causal,
-            window_size=window_size,
-            alibi_slopes=alibi_slopes,
-            deterministic=deterministic,
-            return_softmax=True,
-        )
-        block_out = block_out.to(torch.float32)
-        block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
-        if out is None:
-            out = block_out
-            lse = block_lse
-        else:
-            new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
-            out = torch.exp(lse - new_lse) * out + torch.exp(block_lse - new_lse) * block_out
-            lse = new_lse
+        next_k, next_v, next_kv_rank, reqs = send_recv_kv(local_k, local_v, step + 1, rank, world_size, causal)
+        if k is not None:
+            assert not causal or kv_rank <= rank
+            local_causal = causal and kv_rank == rank
+            block_out, block_lse, _ = raw_flash_attn_forward(
+                local_q,
+                k,
+                v,
+                dropout_p,
+                causal=local_causal,
+                window_size=window_size,
+                alibi_slopes=alibi_slopes,
+                deterministic=deterministic,
+                return_softmax=True,
+            )
+            block_out = block_out.to(torch.float32)
+            block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
+            if out is None:
+                out = block_out
+                lse = block_lse
+            else:
+                new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
+                out = torch.exp(lse - new_lse) * out + torch.exp(block_lse - new_lse) * block_out
+                lse = new_lse
 
     out = out.to(torch.bfloat16)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
@@ -124,60 +129,66 @@ def ring_flash_attn_backward(
     dist.all_gather(vs, local_v)
 
     local_dq = None
-    dks = [None] * world_size
-    dvs = [None] * world_size
+    local_dk = None
+    local_dv = None
 
     next_k = local_k
     next_v = local_v
     next_kv_rank = rank
     reqs = None
+
+    remote_dk = None
+    remote_dv = None
+    grad_reqs = None
     for step in range(world_size):
         if reqs is not None:
             for req in reqs:
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
-        next_k, next_v, next_kv_rank, reqs = get_kv(local_k, local_v, step + 1, rank, world_size, causal)
-        if k is None:
-            assert v is None
-            continue
-        assert not causal or kv_rank <= rank
-        local_causal = causal and kv_rank == rank
-        block_dq, block_dk, block_dv = raw_flash_attn_backward(
-            local_dout,
-            local_q,
-            k,
-            v,
-            local_out,
-            softmax_lse,
-            rng_state=None,
-            dropout_p=dropout_p,
-            causal=local_causal,
-            window_size=window_size,
-            alibi_slopes=alibi_slopes,
-            deterministic=deterministic,
-            softmax_scale=None,
-        )
-        block_dq = block_dq.to(torch.float32)
-        block_dk = block_dk.to(torch.float32)
-        block_dv = block_dv.to(torch.float32)
+        next_k, next_v, next_kv_rank, reqs = send_recv_kv(local_k, local_v, step + 1, rank, world_size, causal)
+        if k is not None:
+            assert not causal or kv_rank <= rank
+            local_causal = causal and kv_rank == rank
+            block_dq, block_dk, block_dv = raw_flash_attn_backward(
+                local_dout,
+                local_q,
+                k,
+                v,
+                local_out,
+                softmax_lse,
+                rng_state=None,
+                dropout_p=dropout_p,
+                causal=local_causal,
+                window_size=window_size,
+                alibi_slopes=alibi_slopes,
+                deterministic=deterministic,
+                softmax_scale=None,
+            )
+            block_dq = block_dq.to(torch.float32)
+            block_dk = block_dk.to(torch.float32)
+            block_dv = block_dv.to(torch.float32)
 
-        if local_dq is None:
-            local_dq = block_dq
-        else:
-            local_dq += block_dq
-        dks[kv_rank] = block_dk
-        dvs[kv_rank] = block_dv
+            if local_dq is None:
+                local_dq = block_dq
+                local_dk, local_dv = block_dk, block_dv
+            else:
+                local_dq += block_dq
 
-    dks = [dk if dk is not None else torch.zeros_like(local_k) for dk in dks]
-    dvs = [dv if dv is not None else torch.zeros_like(local_v) for dv in dvs]
+        if grad_reqs is not None:
+            for req in grad_reqs:
+                req.wait()
+            if remote_dk is not None:
+                local_dk += remote_dk
+                local_dv += remote_dv
 
-    dks = torch.cat(dks, dim=1)
-    dvs = torch.cat(dvs, dim=1)
-    dist.all_reduce(dks)
-    dist.all_reduce(dvs)
+        remote_dk, remote_dv, _, grad_reqs = send_recv_kv(block_dk, block_dv, step, rank, world_size, causal, is_grad=True)
 
-    local_dk = dks.chunk(world_size, dim=1)[rank]
-    local_dv = dvs.chunk(world_size, dim=1)[rank]
+    if grad_reqs is not None:
+        for req in grad_reqs:
+            req.wait()
+        if remote_dk is not None:
+            local_dk += remote_dk
+            local_dv += remote_dv
 
     return local_dq, local_dk, local_dv
 
