@@ -31,23 +31,22 @@ def log(msg, a, rank0_only=False):
 
 
 if __name__ == "__main__":
+    batch_size = 1
+    seqlen = 3816
+    nheads = 5
+    d = 128
+    dropout_p = 0
+    causal = True
+    deterministic = False
+
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    seed = 42
-
     dtype = torch.bfloat16
     device = torch.device(f"cuda:{rank}")
 
-    batch_size = 1
-    seqlen = 4096
-    nheads = 5
-    d = 128
-
-    dropout_p = 0
-    causal = False
-    deterministic = False
+    assert seqlen % world_size == 0
 
     qkv = torch.randn(
         batch_size, seqlen, 3, nheads, d, device=device, dtype=dtype, requires_grad=True

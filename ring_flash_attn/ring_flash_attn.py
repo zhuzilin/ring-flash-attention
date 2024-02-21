@@ -1,6 +1,6 @@
 import torch
 import torch.distributed as dist
-from raw_flash_attn import raw_flash_attn_forward, raw_flash_attn_backward
+from .raw_flash_attn import raw_flash_attn_forward, raw_flash_attn_backward
 
 
 def send_recv_kv(local_k, local_v, step, rank, world_size, causal, is_grad=False):

@@ -8,7 +8,6 @@ There are some arithmetic errors with the current implementation. The reason for
 
 ### TODOs
 
-- [ ] Make sure the nonpadded length works.
 - [ ] Implement `ring_flash_attn_varlen_qkvpacked_func`
 
 ### Test
