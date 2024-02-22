@@ -12,6 +12,7 @@ There are some arithmetic errors with the current implementation. The reason for
 ### TODOs
 
 - [x] Implement `ring_flash_attn_varlen_qkvpacked_func`
+- [ ] Implement zigzag block [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
 - [ ] Try to upstream to flash attention.
 
 ### Test
