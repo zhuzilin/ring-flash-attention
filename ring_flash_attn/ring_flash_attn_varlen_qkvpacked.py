@@ -4,7 +4,7 @@ from flash_attn.flash_attn_interface import (
     _flash_attn_varlen_forward,
     _flash_attn_varlen_backward,
 )
-from .comm import send_recv_kv
+from .utils import send_recv_kv
 
 
 def mul_lse(lse, out, cu_seqlens):
