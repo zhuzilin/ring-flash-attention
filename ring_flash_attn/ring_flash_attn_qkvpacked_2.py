@@ -27,14 +27,14 @@ def ring_flash_attn_forward_2(
             next_v: torch.Tensor = comm.send_recv(v)
             comm.commit()
 
-        if not causal or comm.rank <= step:
+        if not causal or step <= comm.rank:
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_forward(
                 q,
                 k,
                 v,
                 dropout_p,
                 softmax_scale,
-                causal=causal,
+                causal=causal and step == 0,
                 window_size=window_size,
                 alibi_slopes=alibi_slopes,
                 return_softmax=True and dropout_p > 0,
@@ -48,6 +48,8 @@ def ring_flash_attn_forward_2(
             k = next_k
             v = next_v
 
+    out = out.to(q.dtype)
+    lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out, lse
 
 
