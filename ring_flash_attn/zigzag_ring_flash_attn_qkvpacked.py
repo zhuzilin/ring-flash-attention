@@ -90,7 +90,7 @@ def zigzag_ring_flash_attn_forward(
                     slice_=(slice(None), slice(seq_len_per_device // 2, None)),
                 )
 
-    out = out.to(torch.bfloat16)
+    out = out.to(local_q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out, lse
 

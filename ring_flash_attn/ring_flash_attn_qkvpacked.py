@@ -58,7 +58,7 @@ def ring_flash_attn_forward(
             block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
 
-    out = out.to(torch.bfloat16)
+    out = out.to(local_q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out, lse
 
