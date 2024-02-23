@@ -135,17 +135,12 @@ def stripe_flash_attn_backward_2(
                 alibi_slopes,
                 deterministic,
             )
-            if dq is None:
-                dq = block_dq
-                dk = block_dk
-                dv = block_dv
-            else:
-                dq[1:, ] += block_dq
-                d_kv_comm.wait()
-                dk = next_dk
-                dk[:-1, ] += block_dk
-                dv = next_dv
-                dv[:-1, ] += block_dv
+            dq[1:, ] += block_dq
+            d_kv_comm.wait()
+            dk = next_dk
+            dk[:-1, ] += block_dk
+            dv = next_dv
+            dv[:-1, ] += block_dv
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
