@@ -2,19 +2,7 @@ import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
 from .comm import send_recv_kv
-
-
-def update_out_and_lse(out, lse, block_out, block_lse):
-    if out is None:
-        out = block_out
-        lse = block_lse
-    else:
-        new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
-        out = (
-            torch.exp(lse - new_lse) * out + torch.exp(block_lse - new_lse) * block_out
-        )
-        lse = new_lse
-    return out, lse
+from .ring_flash_attn_qkvpacked import update_out_and_lse
 
 
 def ring_flash_attn_forward(
@@ -49,10 +37,9 @@ def ring_flash_attn_forward(
             for req in reqs:
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
-        if step + 1 < world_size:
-            next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-                process_group, local_k, local_v, step + 1, causal
-            )
+        next_k, next_v, next_kv_rank, reqs = send_recv_kv(
+            process_group, local_k, local_v, step + 1, causal
+        )
         if k is not None:
             assert not causal or kv_rank <= rank
             local_causal = causal and kv_rank == rank
@@ -127,10 +114,9 @@ def ring_flash_attn_backward(
             for req in reqs:
                 req.wait()
         k, v, kv_rank = next_k, next_v, next_kv_rank
-        if step + 1 < world_size:
-            next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-                process_group, local_k, local_v, step + 1, causal
-            )
+        next_k, next_v, next_kv_rank, reqs = send_recv_kv(
+            process_group, local_k, local_v, step + 1, causal
+        )
         if k is not None:
             assert not causal or kv_rank <= rank
             local_causal = causal and kv_rank == rank
