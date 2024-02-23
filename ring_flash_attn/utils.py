@@ -3,9 +3,7 @@ from typing import Optional, Tuple
 import torch
 import torch.distributed as dist
 
-__all__ = ["send_recv_kv", "update_out_and_lse"]
-
-
+__all__ = ['send_recv_kv', 'update_out_and_lse', 'RingComm']
 def update_out_and_lse(
     out: Optional[torch.Tensor],
     lse: Optional[torch.Tensor],
@@ -39,6 +37,47 @@ def update_out_and_lse(
         else:
             lse = new_lse
     return out, lse
+
+
+class RingComm:
+    def __init__(self, process_group: dist.ProcessGroup):
+        self._process_group = process_group
+        self._ops = []
+        self.rank = dist.get_rank(self._process_group)
+        self.world_size = dist.get_world_size(self._process_group)
+        self._reqs = None
+
+    def send_recv(self, to_send: torch.Tensor,
+                  send_direction="incr", inplace=False) -> torch.Tensor:
+        if inplace:
+            res = to_send
+        else:
+            res = torch.empty_like(to_send)
+        if send_direction == "incr":
+            send_rank = (self.rank + 1) % self.world_size
+            recv_rank = (self.rank - 1) % self.world_size
+        else:
+            send_rank = (self.rank - 1) % self.world_size
+            recv_rank = (self.rank + 1) % self.world_size
+
+        send_op = dist.P2POp(dist.isend, to_send, send_rank, group=self._process_group)
+        recv_op = dist.P2POp(dist.irecv, res, recv_rank, group=self._process_group)
+        self._ops.append(send_op)
+        self._ops.append(recv_op)
+        return res
+
+    def commit(self):
+        if self._reqs is not None:
+            raise RuntimeError("commit called twice")
+        self._reqs = dist.batch_isend_irecv(self._ops)
+
+    def wait(self):
+        if self._reqs is None:
+            raise RuntimeError("wait called before commit")
+        for req in self._reqs:
+            req.wait()
+        self._reqs = None
+        self._ops = []
 
 
 def send_recv_kv(process_group, local_k, local_v, step, causal, is_grad=False):
