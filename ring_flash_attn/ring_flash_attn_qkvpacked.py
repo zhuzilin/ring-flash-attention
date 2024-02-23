@@ -1,20 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from .comm import send_recv_kv
-
-
-def update_out_and_lse(out, lse, block_out, block_lse):
-    if out is None:
-        out = block_out
-        lse = block_lse
-    else:
-        new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
-        out = (
-            torch.exp(lse - new_lse) * out + torch.exp(block_lse - new_lse) * block_out
-        )
-        lse = new_lse
-    return out, lse
+from .comm import send_recv_kv, update_out_and_lse
 
 
 def ring_flash_attn_forward(
