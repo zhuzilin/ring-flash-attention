@@ -1,5 +1,37 @@
+from typing import Optional, Tuple
+
 import torch
 import torch.distributed as dist
+
+__all__ = ['send_recv_kv', 'update_out_and_lse']
+
+
+def update_out_and_lse(out: Optional[torch.Tensor], lse: Optional[torch.Tensor],
+                       block_out: torch.Tensor, block_lse: torch.Tensor,
+                       slice_=None) -> Tuple[torch.Tensor, torch.Tensor]:
+    if out is None:
+        if slice_ is not None:
+            raise RuntimeError("first update_out_and_lse should not pass slice_ args")
+        out = block_out
+        lse = block_lse
+    else:
+        lse_with_slice = lse
+        if slice_ is not None:
+            lse_with_slice = lse[slice_]
+
+        new_lse = lse_with_slice + torch.log(1 + torch.exp(block_lse - lse_with_slice))
+
+        sliced_out = out
+        if slice_ is not None:
+            sliced_out = out[slice_]
+
+        out[slice_] = torch.exp(lse_with_slice - new_lse) * sliced_out + torch.exp(block_lse - new_lse) * block_out
+
+        if slice_ is not None:
+            lse[slice_] = new_lse
+        else:
+            lse = new_lse
+    return out, lse
 
 
 def send_recv_kv(process_group, local_k, local_v, step, causal, is_grad=False):
