@@ -1,7 +1,10 @@
+import os
+
 from flash_attn import flash_attn_qkvpacked_func
 import torch
 import torch.distributed as dist
 from ring_flash_attn import ring_flash_attn_qkvpacked_func
+from ring_flash_attn.ring_flash_attn_qkvpacked_2 import ring_flash_attn_qkvpacked_func_v2
 
 
 def log(msg, a, rank0_only=False):
@@ -79,7 +82,9 @@ if __name__ == "__main__":
     local_out = out.chunk(world_size, dim=1)[rank]
     local_lse = lse.chunk(world_size, dim=-1)[rank]
 
-    ring_out, ring_lse, _ = ring_flash_attn_qkvpacked_func(
+    fn = ring_flash_attn_qkvpacked_func_v2 if os.getenv("TEST_V2", "OFF") == "ON" else ring_flash_attn_qkvpacked_func
+
+    ring_out, ring_lse, _ = fn(
         local_qkv,
         dropout_p=dropout_p,
         causal=causal,
