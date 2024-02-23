@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from .comm import send_recv_kv, update_out_and_lse
+from .utils import send_recv_kv, update_out_and_lse
 
 
 def ring_flash_attn_forward(

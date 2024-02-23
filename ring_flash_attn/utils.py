@@ -4,11 +4,13 @@ import torch
 import torch.distributed as dist
 
 __all__ = ['send_recv_kv', 'update_out_and_lse', 'RingComm']
-
-
-def update_out_and_lse(out: Optional[torch.Tensor], lse: Optional[torch.Tensor],
-                       block_out: torch.Tensor, block_lse: torch.Tensor,
-                       slice_=None) -> Tuple[torch.Tensor, torch.Tensor]:
+def update_out_and_lse(
+    out: Optional[torch.Tensor],
+    lse: Optional[torch.Tensor],
+    block_out: torch.Tensor,
+    block_lse: torch.Tensor,
+    slice_=None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if out is None:
         if slice_ is not None:
             raise RuntimeError("first update_out_and_lse should not pass slice_ args")
@@ -25,7 +27,10 @@ def update_out_and_lse(out: Optional[torch.Tensor], lse: Optional[torch.Tensor],
         if slice_ is not None:
             sliced_out = out[slice_]
 
-        out[slice_] = torch.exp(lse_with_slice - new_lse) * sliced_out + torch.exp(block_lse - new_lse) * block_out
+        out[slice_] = (
+            torch.exp(lse_with_slice - new_lse) * sliced_out
+            + torch.exp(block_lse - new_lse) * block_out
+        )
 
         if slice_ is not None:
             lse[slice_] = new_lse
