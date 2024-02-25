@@ -16,6 +16,12 @@ There are some arithmetic errors with the current implementation. The reason for
 - [ ] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
 - [ ] Try to upstream to flash attention.
 
+### Setup
+
+```bash
+pip install -r requirements.txt
+```
+
 ### Test
 
 ```bash
