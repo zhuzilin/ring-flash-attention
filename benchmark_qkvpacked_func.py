@@ -7,15 +7,14 @@ from ring_flash_attn import (
     zigzag_ring_flash_attn_qkvpacked_func,
 )
 from time import time
+from ring_flash_attn.utils import print_wait_times, reset_wait_times
 
-
-def benchmark_forward(f, num_warmup_iter=1000, num_benchmark_iter=1000, log=True):
+def benchmark_forward(f, num_benchmark_iter=1000, seqlen=4096, log=True):
     torch.cuda.empty_cache()
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
     batch_size = 1
-    seqlen = 4096
     nheads = 5
     d = 128
     dropout_p = 0
@@ -62,13 +61,21 @@ if __name__ == "__main__":
 
     if rank == 0:
         print("warmuping...")
-    benchmark_forward(flash_attn_qkvpacked_func, log=False)
+    #benchmark_forward(flash_attn_qkvpacked_func, log=False)
     benchmark_forward(ring_flash_attn_qkvpacked_func_v2, log=False)
     benchmark_forward(ring_flash_attn_qkvpacked_func, log=False)
     benchmark_forward(zigzag_ring_flash_attn_qkvpacked_func, log=False)
-    if rank == 0:
-        print("benchmark:")
-    benchmark_forward(flash_attn_qkvpacked_func)
-    benchmark_forward(ring_flash_attn_qkvpacked_func)
-    benchmark_forward(ring_flash_attn_qkvpacked_func_v2)
-    benchmark_forward(zigzag_ring_flash_attn_qkvpacked_func)
+
+    seqlen = 32
+    while seqlen <= 32768:
+        reset_wait_times()
+        if rank == 0:
+            print(f"benchmark seq_len={seqlen}:")
+        #benchmark_forward(flash_attn_qkvpacked_func, seqlen=seqlen, log=False)
+        benchmark_forward(ring_flash_attn_qkvpacked_func, seqlen=seqlen, log=False)
+        benchmark_forward(ring_flash_attn_qkvpacked_func_v2, seqlen=seqlen, log=False)
+        benchmark_forward(zigzag_ring_flash_attn_qkvpacked_func, seqlen=seqlen, log=False)
+
+        print_wait_times(rank)
+        print()
+        seqlen *= 2

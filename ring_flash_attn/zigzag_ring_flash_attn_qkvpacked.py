@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from .utils import send_recv_kv, update_out_and_lse
+from .utils import send_recv_kv, update_out_and_lse, wait_reqs
 
 
 def get_zigzag_rank(rank, world_size):
@@ -57,9 +57,7 @@ def zigzag_ring_flash_attn_forward(
         return block_out, block_lse
 
     for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
+        wait_reqs(reqs, "zigzag_ring_flash_attn_forward")
         k, v, kv_rank = next_k, next_v, next_kv_rank
         if step + 1 < world_size:
             next_k, next_v, next_kv_rank, reqs = send_recv_kv(
@@ -168,9 +166,7 @@ def zigzag_ring_flash_attn_backward(
     remote_dv = None
     grad_reqs = None
     for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
+        wait_reqs(reqs, "zigzag_ring_flash_attn_backward_1")
         k, v, kv_rank = next_k, next_v, next_kv_rank
         if step + 1 < world_size:
             next_k, next_v, next_kv_rank, reqs = send_recv_kv(
@@ -211,8 +207,7 @@ def zigzag_ring_flash_attn_backward(
                 local_dq[:, seq_len_per_device // 2 :] += dq1
 
         if grad_reqs is not None:
-            for req in grad_reqs:
-                req.wait()
+            wait_reqs(grad_reqs, "zigzag_ring_flash_attn_backward_2")
             local_dk += remote_dk
             local_dv += remote_dv
 
@@ -225,8 +220,7 @@ def zigzag_ring_flash_attn_backward(
             is_grad=True,
         )
 
-    for req in grad_reqs:
-        req.wait()
+    wait_reqs(grad_reqs, "zigzag_ring_flash_attn_backward_3")
     local_dk += remote_dk
     local_dv += remote_dv
 

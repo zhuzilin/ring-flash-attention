@@ -1,9 +1,40 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
+import time
+from statistics import mean
 
 import torch
 import torch.distributed as dist
 
 __all__ = ["send_recv_kv", "update_out_and_lse", "RingComm"]
+
+
+req_wait_times = {}
+
+
+def wait_reqs(reqs: Optional[List], key: str):
+    if reqs is None:
+        return
+
+    start_time = time.perf_counter_ns() 
+    for req in reqs:
+        req.wait()
+    elapsed = time.perf_counter_ns() - start_time
+
+    times = req_wait_times.get(key)
+    if times is None:
+        req_wait_times[key] = [elapsed]
+    else:
+        times.append(elapsed)
+
+
+def reset_wait_times():
+    req_wait_times.clear()
+
+
+def print_wait_times(rank):
+    for key, times in req_wait_times.items():
+        mean(times)
+        print(f"{key}: rank={rank}, total={sum(times)//1000}us, mean={mean(times)//1000:.2f}us, min={min(times)/1000:.2f}us, max={max(times)//1000:.2f}us, num_calls={len(times)}")
 
 
 @torch.jit.script
@@ -83,8 +114,7 @@ class RingComm:
     def wait(self):
         if self._reqs is None:
             raise RuntimeError("wait called before commit")
-        for req in self._reqs:
-            req.wait()
+        wait_reqs(self._reqs, "RingComm.wait()")
         self._reqs = None
         self._ops = []
 

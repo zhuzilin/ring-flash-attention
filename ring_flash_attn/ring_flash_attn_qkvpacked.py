@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from .utils import send_recv_kv, update_out_and_lse
+from .utils import send_recv_kv, update_out_and_lse, wait_reqs
 
 
 def ring_flash_attn_forward(
@@ -32,9 +32,7 @@ def ring_flash_attn_forward(
     next_kv_rank = rank
     reqs = None
     for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
+        wait_reqs(reqs, "ring_flash_attn_forward")
         k, v, kv_rank = next_k, next_v, next_kv_rank
         if step + 1 < world_size:
             next_k, next_v, next_kv_rank, reqs = send_recv_kv(
@@ -108,9 +106,7 @@ def ring_flash_attn_backward(
     remote_dv = None
     grad_reqs = None
     for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
+        wait_reqs(reqs, "ring_flash_attn_backward_1")
         k, v, kv_rank = next_k, next_v, next_kv_rank
         if step + 1 < world_size:
             next_k, next_v, next_kv_rank, reqs = send_recv_kv(
@@ -150,8 +146,7 @@ def ring_flash_attn_backward(
                 local_dq += block_dq
 
         if grad_reqs is not None:
-            for req in grad_reqs:
-                req.wait()
+            wait_reqs(grad_reqs, "ring_flash_attn_backward_2")
             if remote_dk is not None:
                 local_dk += remote_dk
                 local_dv += remote_dv
@@ -166,8 +161,7 @@ def ring_flash_attn_backward(
         )
 
     if grad_reqs is not None:
-        for req in grad_reqs:
-            req.wait()
+        wait_reqs(grad_reqs, "ring_flash_attn_backward_3")
         if remote_dk is not None:
             local_dk += remote_dk
             local_dv += remote_dv
