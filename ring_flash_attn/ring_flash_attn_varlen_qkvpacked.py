@@ -228,8 +228,8 @@ class RingFlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
 
         assert alibi_slopes is None
         q = qkv[:, 0]
-        k = qkv[:, 1]
-        v = qkv[:, 2]
+        k = qkv[:, 1].contiguous()
+        v = qkv[:, 2].contiguous()
         out, softmax_lse = ring_flash_attn_varlen_forward(
             group,
             q,

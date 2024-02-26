@@ -5,7 +5,7 @@ This repo implements the [RingAttention](https://github.com/lhao499/RingAttentio
 - `ring_flash_attn_qkvpacked_func`: ring attention version of `flash_attn_qkvpacked_func`
 - `ring_flash_attn_qkvpacked_func_v2`: a different communication pattern of  `ring_flash_attn_qkvpacked_func`
 - `ring_flash_attn_varlen_qkvpacked_func`: ring attention version of `flash_attn_varlen_qkvpacked_func`
-- `zigzag_ring_flash_attn_qkvpacked_func`: an optimized version of `ring_flash_attn_varlen_qkvpacked_func`, see 
+- `zigzag_ring_flash_attn_qkvpacked_func`: an optimized version of `ring_flash_attn_varlen_qkvpacked_func`, see [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
 - `stripe_flash_attn_qkvpacked_func`: stripe attention version of `ring_flash_attn_varlen_qkvpacked_func`, the block size is set to 1 to use flash attn api.
 
 The main idea is to use the `softmax_lse` output from the flash attention kernels.
