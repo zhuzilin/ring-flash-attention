@@ -12,20 +12,21 @@ There are some arithmetic errors with the current implementation. The reason for
 ### TODOs
 
 - [x] Implement `ring_flash_attn_varlen_qkvpacked_func`
-- [ ] Implement `zigzag_ring_flash_attn_qkvpacked_func` [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
+- [x] Implement `zigzag_ring_flash_attn_qkvpacked_func` [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
 - [ ] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
 - [ ] Try to upstream to flash attention.
 
 ### Test
 
 ```bash
-torchrun --nproc_per_node 8 test_qkvpacked_func.py
-torchrun --nproc_per_node 8 test_varlen_qkvpacked_func.py
-torchrun --nproc_per_node 8 test_zigzag_qkvpacked_func.py
+torchrun --nproc_per_node 8 test/test_qkvpacked_func.py
+torchrun --nproc_per_node 8 test/test_varlen_qkvpacked_func.py
+torchrun --nproc_per_node 8 test/test_zigzag_qkvpacked_func.py
 ```
 
 ### Benchmark
 
 ```bash
-torchrun --nproc_per_node 8 benchmark_qkvpacked_func.py
+torchrun --nproc_per_node 8 benchmark/benchmark_qkvpacked_func.py
+torchrun --nproc_per_node 8 benchmark/benchmark_varlen_qkvpacked_func.py
 ```

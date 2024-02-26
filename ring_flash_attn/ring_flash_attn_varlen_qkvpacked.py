@@ -7,11 +7,11 @@ from flash_attn.flash_attn_interface import (
 from .utils import send_recv_kv
 
 
-def mul_lse(lse, out, cu_seqlens):
+def flatten_lse(lse, cu_seqlens):
     new_out = []
     for i in range(len(cu_seqlens) - 1):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        new_out.append(lse[i, : end - start] * out[start:end])
+        new_out.append(lse[i, : end - start])
     return torch.cat(new_out)
 
 
@@ -79,12 +79,16 @@ def ring_flash_attn_varlen_forward(
                 lse = block_lse
             else:
                 new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
-                out = mul_lse(
-                    lse=torch.exp(lse - new_lse), out=out, cu_seqlens=local_cu_seqlens
-                ) + mul_lse(
-                    lse=torch.exp(block_lse - new_lse),
-                    out=block_out,
-                    cu_seqlens=local_cu_seqlens,
+                out = (
+                    flatten_lse(
+                        lse=torch.exp(lse - new_lse), cu_seqlens=local_cu_seqlens
+                    )
+                    * out
+                    + flatten_lse(
+                        lse=torch.exp(block_lse - new_lse),
+                        cu_seqlens=local_cu_seqlens,
+                    )
+                    * block_out
                 )
                 lse = new_lse
 

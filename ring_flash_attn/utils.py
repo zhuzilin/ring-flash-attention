@@ -55,19 +55,11 @@ class RingComm:
         self.world_size = dist.get_world_size(self._process_group)
         self._reqs = None
 
-    def send_recv(
-        self, to_send: torch.Tensor, send_direction="incr", inplace=False
-    ) -> torch.Tensor:
-        if inplace:
-            res = to_send
-        else:
-            res = torch.empty_like(to_send)
-        if send_direction == "incr":
-            send_rank = (self.rank + 1) % self.world_size
-            recv_rank = (self.rank - 1) % self.world_size
-        else:
-            send_rank = (self.rank - 1) % self.world_size
-            recv_rank = (self.rank + 1) % self.world_size
+    def send_recv(self, to_send: torch.Tensor) -> torch.Tensor:
+        res = torch.empty_like(to_send)
+
+        send_rank = (self.rank + 1) % self.world_size
+        recv_rank = (self.rank - 1) % self.world_size
 
         send_op = dist.P2POp(dist.isend, to_send, send_rank, group=self._process_group)
         recv_op = dist.P2POp(dist.irecv, res, recv_rank, group=self._process_group)
