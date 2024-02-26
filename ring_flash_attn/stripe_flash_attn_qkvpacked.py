@@ -101,6 +101,7 @@ def stripe_flash_attn_backward(
             kv_comm.commit()
 
         shift_causal = step > kv_comm.rank
+        softmax_lse_1 = None
         if not shift_causal:
             _flash_attn_backward(
                 dout,
@@ -121,21 +122,19 @@ def stripe_flash_attn_backward(
                 rng_state=None,
             )
         else:
-            shrink_size = list(q.shape)
-            shrink_size[1] -= 1
-            block_dq_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
-            block_dk_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
-            block_dv_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
+            if softmax_lse_1 is None:
+                # lazy init, since the last rank does not need softmax_lse_1
+                softmax_lse_1 = softmax_lse[:, :, 1:].contiguous()
             _flash_attn_backward(
                 dout[:, 1:],
                 q[:, 1:],
                 k[:, :-1],
                 v[:, :-1],
                 out[:, 1:],
-                softmax_lse[:, :, 1:].contiguous(),
-                block_dq_buffer,
-                block_dk_buffer,
-                block_dv_buffer,
+                softmax_lse_1,
+                block_dq_buffer[:, 1:],
+                block_dk_buffer[:, :-1],
+                block_dv_buffer[:, :-1],
                 dropout_p,
                 softmax_scale,
                 causal,
@@ -153,7 +152,7 @@ def stripe_flash_attn_backward(
             if not shift_causal:
                 dq += block_dq_buffer
             else:
-                dq[:, 1:] += block_dq_buffer
+                dq[:, 1:] += block_dq_buffer[:, 1:]
             d_kv_comm.wait()
             if not shift_causal:
                 dk = block_dk_buffer + next_dk
@@ -161,8 +160,8 @@ def stripe_flash_attn_backward(
             else:
                 dk = next_dk
                 dv = next_dv
-                dk[:, :-1] += block_dk_buffer
-                dv[:, :-1] += block_dv_buffer
+                dk[:, :-1] += block_dk_buffer[:, :-1]
+                dv[:, :-1] += block_dv_buffer[:, :-1]
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
