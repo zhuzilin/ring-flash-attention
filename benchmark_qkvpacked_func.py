@@ -9,7 +9,7 @@ from ring_flash_attn import (
 from time import time
 
 
-def benchmark_forward(f, num_warmup_iter=100, num_benchmark_iter=1000):
+def benchmark_forward(f, num_warmup_iter=1000, num_benchmark_iter=1000, log=True):
     torch.cuda.empty_cache()
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -29,18 +29,6 @@ def benchmark_forward(f, num_warmup_iter=100, num_benchmark_iter=1000):
         batch_size, seqlen, 3, nheads, d, device=device, dtype=dtype, requires_grad=True
     )
 
-    torch.cuda.synchronize(device=device)
-    for _ in range(num_warmup_iter):
-        _ = f(
-            qkv,
-            dropout_p=dropout_p,
-            causal=causal,
-            window_size=(-1, -1),
-            alibi_slopes=None,
-            deterministic=deterministic,
-            return_attn_probs=False,
-        )
-
     dist.barrier()
     torch.cuda.synchronize(device=device)
     start = time()
@@ -58,7 +46,7 @@ def benchmark_forward(f, num_warmup_iter=100, num_benchmark_iter=1000):
     torch.cuda.synchronize(device=device)
     end = time()
 
-    if rank == 0:
+    if rank == 0 and log:
         print(
             f"{f.__name__} {num_benchmark_iter / (end - start)} iter/s, {end - start} sec"
         )
@@ -72,6 +60,14 @@ if __name__ == "__main__":
     device = torch.device(f"cuda:{rank}")
     torch.cuda.set_device(device)
 
+    if rank == 0:
+        print("warmuping...")
+    benchmark_forward(flash_attn_qkvpacked_func, log=False)
+    benchmark_forward(ring_flash_attn_qkvpacked_func_v2, log=False)
+    benchmark_forward(ring_flash_attn_qkvpacked_func, log=False)
+    benchmark_forward(zigzag_ring_flash_attn_qkvpacked_func, log=False)
+    if rank == 0:
+        print("benchmark:")
     benchmark_forward(flash_attn_qkvpacked_func)
     benchmark_forward(ring_flash_attn_qkvpacked_func)
     benchmark_forward(ring_flash_attn_qkvpacked_func_v2)

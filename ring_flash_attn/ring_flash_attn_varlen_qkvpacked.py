@@ -88,7 +88,7 @@ def ring_flash_attn_varlen_forward(
                 )
                 lse = new_lse
 
-    out = out.to(torch.bfloat16)
+    out = out.to(local_q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out, lse
 
