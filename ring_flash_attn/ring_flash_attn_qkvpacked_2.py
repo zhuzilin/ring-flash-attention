@@ -5,16 +5,16 @@ from .utils import RingComm, update_out_and_lse
 
 
 def ring_flash_attn_forward_2(
-    process_group,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    softmax_scale,
-    dropout_p=0,
-    causal=True,
-    window_size=(-1, -1),
-    alibi_slopes=None,
-    deterministic=False,
+        process_group,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        softmax_scale,
+        dropout_p=0,
+        causal=True,
+        window_size=(-1, -1),
+        alibi_slopes=None,
+        deterministic=False,
 ):
     comm = RingComm(process_group)
 
@@ -52,56 +52,75 @@ def ring_flash_attn_forward_2(
 
 
 def ring_flash_attn_backward_2(
-    process_group,
-    dout,
-    q,
-    k,
-    v,
-    out,
-    softmax_lse,
-    softmax_scale,
-    dropout_p=0,
-    causal=True,
-    window_size=(-1, -1),
-    alibi_slopes=None,
-    deterministic=False,
+        process_group,
+        dout,
+        q,
+        k,
+        v,
+        out,
+        softmax_lse,
+        softmax_scale,
+        dropout_p=0,
+        causal=True,
+        window_size=(-1, -1),
+        alibi_slopes=None,
+        deterministic=False,
 ):
     kv_comm = RingComm(process_group)
     d_kv_comm = RingComm(process_group)
     dq, dk, dv = None, None, None
-    send_recv_kwargs = {"send_direction": "decr"}
+    send_recv_kwargs = {}
     next_dk, next_dv = None, None
+
+    block_dq_buffer = torch.empty(
+        q.shape, dtype=q.dtype, device=q.device
+    )
+    block_dk_buffer = torch.empty(
+        k.shape, dtype=k.dtype, device=k.device
+    )
+    block_dv_buffer = torch.empty(
+        v.shape, dtype=v.dtype, device=v.device
+    )
 
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
             next_k = kv_comm.send_recv(k, **send_recv_kwargs)
             next_v = kv_comm.send_recv(v, **send_recv_kwargs)
             kv_comm.commit()
-
-        if kv_comm.rank <= step or not causal:
-            block_dq, block_dk, block_dv = _flash_attn_backward(
+        if step <= kv_comm.rank or not causal:
+            bwd_causal = causal and step == 0
+            _flash_attn_backward(
                 dout,
                 q,
                 k,
                 v,
                 out,
                 softmax_lse,
-                softmax_scale,
+                block_dq_buffer,
+                block_dk_buffer,
+                block_dv_buffer,
                 dropout_p,
-                causal,
+                softmax_scale,
+                bwd_causal,
                 window_size,
                 alibi_slopes,
                 deterministic,
+                rng_state=None
             )
+
             if dq is None:
-                dq = block_dq
-                dk = block_dk
-                dv = block_dv
+                dq = block_dq_buffer.clone()
+                dk = block_dk_buffer
+                dv = block_dv_buffer
             else:
-                dq += block_dq
+                dq += block_dq_buffer
                 d_kv_comm.wait()
-                dk = next_dk + block_dk
-                dv = next_dv + block_dv
+                dk = block_dk_buffer + next_dk
+                dv = block_dv_buffer + next_dv
+        elif step != 0:
+            d_kv_comm.wait()
+            dk = next_dk
+            dv = next_dv
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
@@ -120,16 +139,16 @@ def ring_flash_attn_backward_2(
 class RingFlashAttnQKVPackedFuncV2(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx,
-        qkv,
-        dropout_p,
-        softmax_scale,
-        causal,
-        window_size,
-        alibi_slopes,
-        deterministic,
-        return_softmax,
-        group,
+            ctx,
+            qkv,
+            dropout_p,
+            softmax_scale,
+            causal,
+            window_size,
+            alibi_slopes,
+            deterministic,
+            return_softmax,
+            group,
     ):
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
@@ -185,15 +204,15 @@ class RingFlashAttnQKVPackedFuncV2(torch.autograd.Function):
 
 
 def ring_flash_attn_qkvpacked_func_v2(
-    qkv,
-    dropout_p=0.0,
-    softmax_scale=None,
-    causal=False,
-    window_size=(-1, -1),  # -1 means infinite context window
-    alibi_slopes=None,
-    deterministic=False,
-    return_attn_probs=False,
-    group=None,
+        qkv,
+        dropout_p=0.0,
+        softmax_scale=None,
+        causal=False,
+        window_size=(-1, -1),  # -1 means infinite context window
+        alibi_slopes=None,
+        deterministic=False,
+        return_attn_probs=False,
+        group=None,
 ):
     return RingFlashAttnQKVPackedFuncV2.apply(
         qkv,
