@@ -22,10 +22,12 @@ def stripe_flash_attn_forward(
     out = None
     lse = None
 
+    next_k, next_v = None, None
+
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k: torch.Tensor = comm.send_recv(k)
-            next_v: torch.Tensor = comm.send_recv(v)
+            next_k: torch.Tensor = comm.send_recv(k, next_k)
+            next_v: torch.Tensor = comm.send_recv(v, next_v)
             comm.commit()
 
         if step <= comm.rank:
@@ -43,9 +45,9 @@ def stripe_flash_attn_forward(
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_forward(
-                q[:, 1:, ],
-                k[:, :-1, ],
-                v[:, :-1, ],
+                q[:, 1:],
+                k[:, :-1],
+                v[:, :-1],
                 dropout_p,
                 softmax_scale,
                 causal=causal,
@@ -84,6 +86,7 @@ def stripe_flash_attn_backward(
     d_kv_comm = RingComm(process_group)
     dq, dk, dv = None, None, None
     next_dk, next_dv = None, None
+    next_k, next_v = None, None
 
     block_dq_buffer = torch.empty(
         q.shape, dtype=q.dtype, device=q.device
@@ -96,8 +99,8 @@ def stripe_flash_attn_backward(
     )
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k)
-            next_v = kv_comm.send_recv(v)
+            next_k = kv_comm.send_recv(k, next_k)
+            next_v = kv_comm.send_recv(v, next_v)
             kv_comm.commit()
 
         shift_causal = step > kv_comm.rank
@@ -169,8 +172,8 @@ def stripe_flash_attn_backward(
             k = next_k
             v = next_v
 
-        next_dk = d_kv_comm.send_recv(dk)
-        next_dv = d_kv_comm.send_recv(dv)
+        next_dk = d_kv_comm.send_recv(dk, next_dk)
+        next_dv = d_kv_comm.send_recv(dv, next_dv)
         d_kv_comm.commit()
 
     d_kv_comm.wait()

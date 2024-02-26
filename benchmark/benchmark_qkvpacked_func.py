@@ -6,7 +6,7 @@ from ring_flash_attn import (
     ring_flash_attn_qkvpacked_func_v2,
     zigzag_ring_flash_attn_qkvpacked_func,
 )
-from time import time
+import torch.cuda
 
 
 def benchmark_forward(f, num_benchmark_iter=1000, log=True):
@@ -16,7 +16,7 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     device = torch.device(f"cuda:{rank}")
 
     batch_size = 1
-    seqlen = 4096
+    seqlen = 1024 * 8
     nheads = 5
     d = 128
     dropout_p = 0
@@ -29,27 +29,30 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     qkv = torch.randn(
         batch_size, seqlen, 3, nheads, d, device=device, dtype=dtype, requires_grad=True
     )
-
+    torch.cuda.synchronize(device=device)
     dist.barrier()
+    begin = torch.cuda.Event(enable_timing=True)
+    begin.record()
+    with torch.no_grad():
+        for _ in range(num_benchmark_iter):
+            _ = f(
+                qkv,
+                dropout_p=dropout_p,
+                causal=causal,
+                window_size=(-1, -1),
+                alibi_slopes=None,
+                deterministic=deterministic,
+                return_attn_probs=False,
+            )
+    end = torch.cuda.Event(enable_timing=True)
+    end.record()
     torch.cuda.synchronize(device=device)
-    start = time()
-
-    for _ in range(num_benchmark_iter):
-        _ = f(
-            qkv,
-            dropout_p=dropout_p,
-            causal=causal,
-            window_size=(-1, -1),
-            alibi_slopes=None,
-            deterministic=deterministic,
-            return_attn_probs=False,
-        )
-    torch.cuda.synchronize(device=device)
-    end = time()
+    time = begin.elapsed_time(end) / 1000.0
+    dist.barrier()
 
     if rank == 0 and log:
         print(
-            f"{f.__name__} {num_benchmark_iter / (end - start)} iter/s, {end - start} sec"
+            f"{f.__name__} {num_benchmark_iter / time} iter/s, {time} sec"
         )
 
 
