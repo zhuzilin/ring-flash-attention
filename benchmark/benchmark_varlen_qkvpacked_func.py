@@ -11,7 +11,7 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     world_size = dist.get_world_size()
     device = torch.device(f"cuda:{rank}")
 
-    seqlen = 4096
+    seqlen = 8192
     nheads = 5
     d = 128
     dropout_p = 0

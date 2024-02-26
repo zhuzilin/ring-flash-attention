@@ -19,10 +19,6 @@ def ring_flash_attn_forward(
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
 
-    local_q = local_q.contiguous()
-    local_k = local_k.contiguous()
-    local_v = local_v.contiguous()
-
     assert local_q.shape[-1] % 8 == 0, "unpadded head size not supported"
 
     out = None
@@ -78,12 +74,6 @@ def ring_flash_attn_backward(
 ):
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
-
-    local_dout = local_dout.contiguous()
-    local_q = local_q.contiguous()
-    local_k = local_k.contiguous()
-    local_v = local_v.contiguous()
-    local_out = local_out.contiguous()
 
     local_dq = None
     local_dk = None
@@ -193,7 +183,7 @@ class RingFlashAttnQKVPackedFunc(torch.autograd.Function):
             softmax_scale = qkv.shape[-1] ** (-0.5)
 
         assert alibi_slopes is None
-        q = qkv[:, :, 0].contiguous()
+        q = qkv[:, :, 0]
         k = qkv[:, :, 1].contiguous()
         v = qkv[:, :, 2].contiguous()
         out, softmax_lse = ring_flash_attn_forward(

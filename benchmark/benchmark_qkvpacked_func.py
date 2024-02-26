@@ -17,7 +17,7 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     device = torch.device(f"cuda:{rank}")
 
     batch_size = 1
-    seqlen = 4096
+    seqlen = 8192
     nheads = 5
     d = 128
     dropout_p = 0
@@ -36,7 +36,7 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     start = time()
 
     for _ in range(num_benchmark_iter):
-        _ = f(
+        f(
             qkv,
             dropout_p=dropout_p,
             causal=causal,
