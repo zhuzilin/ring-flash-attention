@@ -69,7 +69,6 @@ def ring_flash_attn_backward_2(
     kv_comm = RingComm(process_group)
     d_kv_comm = RingComm(process_group)
     dq, dk, dv = None, None, None
-    send_recv_kwargs = {}
     next_dk, next_dv = None, None
 
     block_dq_buffer = torch.empty(
@@ -84,8 +83,8 @@ def ring_flash_attn_backward_2(
 
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k, **send_recv_kwargs)
-            next_v = kv_comm.send_recv(v, **send_recv_kwargs)
+            next_k = kv_comm.send_recv(k)
+            next_v = kv_comm.send_recv(v)
             kv_comm.commit()
         if step <= kv_comm.rank or not causal:
             bwd_causal = causal and step == 0
@@ -109,9 +108,9 @@ def ring_flash_attn_backward_2(
             )
 
             if dq is None:
-                dq = block_dq_buffer.clone()
-                dk = block_dk_buffer
-                dv = block_dv_buffer
+                dq = block_dq_buffer.to(torch.float32)
+                dk = block_dk_buffer.to(torch.float32)
+                dv = block_dv_buffer.to(torch.float32)
             else:
                 dq += block_dq_buffer
                 d_kv_comm.wait()
@@ -127,13 +126,13 @@ def ring_flash_attn_backward_2(
             k = next_k
             v = next_v
 
-        next_dk = d_kv_comm.send_recv(dk, **send_recv_kwargs)
-        next_dv = d_kv_comm.send_recv(dv, **send_recv_kwargs)
+        next_dk = d_kv_comm.send_recv(dk)
+        next_dv = d_kv_comm.send_recv(dv)
         d_kv_comm.commit()
 
     d_kv_comm.wait()
 
-    return dq, next_dk, next_dv
+    return dq.to(torch.bfloat16), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
 
 class RingFlashAttnQKVPackedFuncV2(torch.autograd.Function):
