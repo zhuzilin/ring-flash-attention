@@ -9,10 +9,11 @@ from ring_flash_attn import (
 from time import time
 
 
-def benchmark_forward(f, num_warmup_iter=1000, num_benchmark_iter=1000, log=True):
+def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     torch.cuda.empty_cache()
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+    device = torch.device(f"cuda:{rank}")
 
     batch_size = 1
     seqlen = 4096

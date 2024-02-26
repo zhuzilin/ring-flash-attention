@@ -11,8 +11,8 @@ def mul_lse(lse, out, cu_seqlens):
     new_out = []
     for i in range(len(cu_seqlens) - 1):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        new_out.append(lse[i, : end - start] * out[start:end])
-    return torch.cat(new_out)
+        new_out.append(lse[i, : end - start])
+    return torch.cat(new_out) * out
 
 
 def ring_flash_attn_varlen_forward(
