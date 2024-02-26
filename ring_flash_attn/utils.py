@@ -8,13 +8,13 @@ __all__ = ["send_recv_kv", "update_out_and_lse", "RingComm"]
 
 @torch.jit.script
 def _update_out_and_lse(
-        out: torch.Tensor,
-        lse: torch.Tensor,
-        block_out: torch.Tensor,
-        block_lse: torch.Tensor,
+    out: torch.Tensor,
+    lse: torch.Tensor,
+    block_out: torch.Tensor,
+    block_lse: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     block_out = block_out.to(torch.float32)
-    block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
+    block_lse = block_lse.transpose(-2, -1).unsqueeze(dim=-1)
 
     new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
 
@@ -25,17 +25,17 @@ def _update_out_and_lse(
 
 
 def update_out_and_lse(
-        out: Optional[torch.Tensor],
-        lse: Optional[torch.Tensor],
-        block_out: torch.Tensor,
-        block_lse: torch.Tensor,
-        slice_=None,
+    out: Optional[torch.Tensor],
+    lse: Optional[torch.Tensor],
+    block_out: torch.Tensor,
+    block_lse: torch.Tensor,
+    slice_=None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if out is None:
         if slice_ is not None:
             raise RuntimeError("first update_out_and_lse should not pass slice_ args")
         out = block_out.to(torch.float32)
-        lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
+        lse = block_lse.transpose(-2, -1).unsqueeze(dim=-1)
     elif slice_ is not None:
         slice_out, slice_lse = out[slice_], lse[slice_]
         slice_out, slice_lse = _update_out_and_lse(
@@ -55,7 +55,9 @@ class RingComm:
         self.world_size = dist.get_world_size(self._process_group)
         self._reqs = None
 
-    def send_recv(self, to_send: torch.Tensor, recv_tensor: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def send_recv(
+        self, to_send: torch.Tensor, recv_tensor: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         if recv_tensor is None:
             res = torch.empty_like(to_send)
         else:
