@@ -54,13 +54,13 @@ def stripe_flash_attn_forward(
                 return_softmax=True and dropout_p > 0,
             )
             out, lse = update_out_and_lse(out, lse, block_out, block_lse,
-                                          slice_=(slice(None), slice(None, -1)))
+                                          slice_=(slice(None), slice(1, None)))
 
         if step + 1 != comm.world_size:
             comm.wait()
             k = next_k
             v = next_v
-
+    lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out.to(q.dtype), lse
 
 
@@ -83,26 +83,35 @@ def stripe_flash_attn_backward(
     kv_comm = RingComm(process_group)
     d_kv_comm = RingComm(process_group)
     dq, dk, dv = None, None, None
-    send_recv_kwargs = {"send_direction": "decr"}
     next_dk, next_dv = None, None
 
+    block_dq_buffer = torch.empty(
+        q.shape, dtype=q.dtype, device=q.device
+    )
+    block_dk_buffer = torch.empty(
+        k.shape, dtype=k.dtype, device=k.device
+    )
+    block_dv_buffer = torch.empty(
+        v.shape, dtype=v.dtype, device=v.device
+    )
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k, **send_recv_kwargs)
-            next_v = kv_comm.send_recv(v, **send_recv_kwargs)
+            next_k = kv_comm.send_recv(k)
+            next_v = kv_comm.send_recv(v)
             kv_comm.commit()
 
-        if step <= kv_comm.rank:
-            block_dq, block_dk, block_dv, _ = _flash_attn_backward(
+        shift_causal = step > kv_comm.rank
+        if not shift_causal:
+            _flash_attn_backward(
                 dout,
                 q,
                 k,
                 v,
                 out,
                 softmax_lse,
-                dq,
-                dk,
-                dv,
+                block_dq_buffer,
+                block_dk_buffer,
+                block_dv_buffer,
                 dropout_p,
                 softmax_scale,
                 causal,
@@ -111,26 +120,22 @@ def stripe_flash_attn_backward(
                 deterministic,
                 rng_state=None,
             )
-            if dq is None:
-                dq = block_dq
-                dk = block_dk
-                dv = block_dv
-            else:
-                # dq += block_dq
-                d_kv_comm.wait()
-                dk = next_dk + block_dk
-                dv = next_dv + block_dv
         else:
-            block_dq, block_dk, block_dv, _ = _flash_attn_backward(
-                dout,
-                q,
-                k,
-                v,
-                out,
-                softmax_lse,
-                dq,
-                dk,
-                dv,
+            shrink_size = list(q.shape)
+            shrink_size[1] -= 1
+            block_dq_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
+            block_dk_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
+            block_dv_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
+            _flash_attn_backward(
+                dout[:, 1:],
+                q[:, 1:],
+                k[:, :-1],
+                v[:, :-1],
+                out[:, 1:],
+                softmax_lse[:, :, 1:].contiguous(),
+                block_dq_buffer,
+                block_dk_buffer,
+                block_dv_buffer,
                 dropout_p,
                 softmax_scale,
                 causal,
@@ -139,24 +144,38 @@ def stripe_flash_attn_backward(
                 deterministic,
                 rng_state=None,
             )
+
+        if dq is None:
+            dq = block_dq_buffer.to(torch.float32)
+            dk = block_dk_buffer.to(torch.float32)
+            dv = block_dv_buffer.to(torch.float32)
+        else:
+            if not shift_causal:
+                dq += block_dq_buffer
+            else:
+                dq[:, 1:] += block_dq_buffer
             d_kv_comm.wait()
-            dk = next_dk
-            dk[:, :-1, ] += block_dk[:, :-1, ]
-            dv = next_dv
-            dv[:, :-1, ] += block_dv[:, :-1, ]
+            if not shift_causal:
+                dk = block_dk_buffer + next_dk
+                dv = block_dv_buffer + next_dv
+            else:
+                dk = next_dk
+                dv = next_dv
+                dk[:, :-1] += block_dk_buffer
+                dv[:, :-1] += block_dv_buffer
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
             k = next_k
             v = next_v
 
-        next_dk = d_kv_comm.send_recv(dk, **send_recv_kwargs)
-        next_dv = d_kv_comm.send_recv(dv, **send_recv_kwargs)
+        next_dk = d_kv_comm.send_recv(dk)
+        next_dv = d_kv_comm.send_recv(dv)
         d_kv_comm.commit()
 
     d_kv_comm.wait()
 
-    return dq, next_dk, next_dv
+    return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
 
 class StripeFlashAttnQKVPackedFunc(torch.autograd.Function):
