@@ -11,7 +11,7 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     world_size = dist.get_world_size()
     device = torch.device(f"cuda:{rank}")
 
-    seqlen = 4096
+    seqlen = 8192
     nheads = 5
     d = 128
     dropout_p = 0
@@ -26,11 +26,11 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     )
 
     cu_seqlens_list = [
-        torch.tensor([0, 4096], device=device, dtype=torch.int32),
-        torch.tensor([0, 128, 3824, 4096], device=device, dtype=torch.int32),
-        torch.tensor([0, 2048, 4096], device=device, dtype=torch.int32),
+        torch.tensor([0, 8192], device=device, dtype=torch.int32),
+        torch.tensor([0, 256, 7648, 8192], device=device, dtype=torch.int32),
+        torch.tensor([0, 4096, 8192], device=device, dtype=torch.int32),
         torch.tensor(
-            [0, 1552, 3152, 3952, 4032, 4096], device=device, dtype=torch.int32
+            [0, 3104, 6304, 7904, 8064, 8192], device=device, dtype=torch.int32
         ),
     ]
     max_seqlen_list = [

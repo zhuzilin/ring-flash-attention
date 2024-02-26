@@ -26,11 +26,7 @@ def zigzag_ring_flash_attn_forward(
     world_size = dist.get_world_size(group=process_group)
     rank0, rank1 = get_zigzag_rank(rank, world_size)
 
-    local_q = local_q.contiguous()
-    local_k = local_k.contiguous()
-    local_v = local_v.contiguous()
-
-    local_q1 = local_q.chunk(2, dim=1)[1].contiguous()
+    local_q1 = local_q.chunk(2, dim=1)[1]
     seq_len_per_device = local_q.shape[1]
 
     assert local_q.shape[-1] % 8 == 0, "unpadded head size not supported"
@@ -114,15 +110,9 @@ def zigzag_ring_flash_attn_backward(
     world_size = dist.get_world_size(group=process_group)
     rank0, rank1 = get_zigzag_rank(rank, world_size)
 
-    local_dout = local_dout.contiguous()
-    local_q = local_q.contiguous()
-    local_k = local_k.contiguous()
-    local_v = local_v.contiguous()
-    local_out = local_out.contiguous()
-
-    local_dout1 = local_dout.chunk(2, dim=1)[1].contiguous()
-    local_q1 = local_q.chunk(2, dim=1)[1].contiguous()
-    local_out1 = local_out.chunk(2, dim=1)[1].contiguous()
+    local_dout1 = local_dout.chunk(2, dim=1)[1]
+    local_q1 = local_q.chunk(2, dim=1)[1]
+    local_out1 = local_out.chunk(2, dim=1)[1]
     softmax_lse1 = softmax_lse.chunk(2, dim=2)[1].contiguous()
     seq_len_per_device = local_q.shape[1]
 
@@ -251,7 +241,7 @@ class ZigZagRingFlashAttnQKVPackedFunc(torch.autograd.Function):
             softmax_scale = qkv.shape[-1] ** (-0.5)
 
         assert alibi_slopes is None
-        q = qkv[:, :, 0].contiguous()
+        q = qkv[:, :, 0]
         k = qkv[:, :, 1].contiguous()
         v = qkv[:, :, 2].contiguous()
         out, softmax_lse = zigzag_ring_flash_attn_forward(

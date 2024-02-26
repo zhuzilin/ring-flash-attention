@@ -5,6 +5,7 @@ from ring_flash_attn import (
     ring_flash_attn_qkvpacked_func,
     ring_flash_attn_qkvpacked_func_v2,
     zigzag_ring_flash_attn_qkvpacked_func,
+    stripe_flash_attn_qkvpacked_func,
 )
 import torch.cuda
 
@@ -69,10 +70,12 @@ if __name__ == "__main__":
     benchmark_forward(flash_attn_qkvpacked_func, log=False)
     benchmark_forward(ring_flash_attn_qkvpacked_func_v2, log=False)
     benchmark_forward(ring_flash_attn_qkvpacked_func, log=False)
+    benchmark_forward(stripe_flash_attn_qkvpacked_func, log=False)
     benchmark_forward(zigzag_ring_flash_attn_qkvpacked_func, log=False)
     if rank == 0:
         print("benchmark:")
     benchmark_forward(flash_attn_qkvpacked_func)
     benchmark_forward(ring_flash_attn_qkvpacked_func)
     benchmark_forward(ring_flash_attn_qkvpacked_func_v2)
+    benchmark_forward(stripe_flash_attn_qkvpacked_func)
     benchmark_forward(zigzag_ring_flash_attn_qkvpacked_func)

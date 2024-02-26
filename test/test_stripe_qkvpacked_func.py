@@ -31,7 +31,9 @@ def log(msg, a, rank0_only=False):
 
 
 def extract_local(value, rank, world_size, dim=1):
-    value = torch.stack(value.split(world_size, dim=dim), dim=dim).transpose(dim, dim + 1)
+    value = torch.stack(value.split(world_size, dim=dim), dim=dim).transpose(
+        dim, dim + 1
+    )
     slicer = [rank if i == dim else slice(None) for i in range(len(value.shape))]
     return value[slicer].contiguous()
 
@@ -123,4 +125,3 @@ if __name__ == "__main__":
 
     log("load_dv", local_dqkv[:, :, 2, :])
     log("dv diff", local_dqkv[:, :, 2, :] - ring_dqkv[:, :, 2, :])
-

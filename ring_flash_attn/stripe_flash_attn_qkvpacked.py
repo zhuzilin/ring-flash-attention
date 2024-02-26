@@ -5,18 +5,20 @@ from .utils import RingComm, update_out_and_lse
 
 
 def stripe_flash_attn_forward(
-        process_group,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        softmax_scale,
-        dropout_p=0,
-        causal=True,
-        window_size=(-1, -1),
-        alibi_slopes=None,
-        deterministic=False,
+    process_group,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    softmax_scale,
+    dropout_p=0,
+    causal=True,
+    window_size=(-1, -1),
+    alibi_slopes=None,
+    deterministic=False,
 ):
-    assert causal, "stripe flash attn only supports causal attention, if not causal, ring flash attn instead"
+    assert (
+        causal
+    ), "stripe flash attn only supports causal attention, if not causal, ring flash attn instead"
     comm = RingComm(process_group)
 
     out = None
@@ -55,8 +57,9 @@ def stripe_flash_attn_forward(
                 alibi_slopes=alibi_slopes,
                 return_softmax=True and dropout_p > 0,
             )
-            out, lse = update_out_and_lse(out, lse, block_out, block_lse,
-                                          slice_=(slice(None), slice(1, None)))
+            out, lse = update_out_and_lse(
+                out, lse, block_out, block_lse, slice_=(slice(None), slice(1, None))
+            )
 
         if step + 1 != comm.world_size:
             comm.wait()
@@ -67,36 +70,32 @@ def stripe_flash_attn_forward(
 
 
 def stripe_flash_attn_backward(
-        process_group,
-        dout,
-        q,
-        k,
-        v,
-        out,
-        softmax_lse,
-        softmax_scale,
-        dropout_p=0,
-        causal=True,
-        window_size=(-1, -1),
-        alibi_slopes=None,
-        deterministic=False,
+    process_group,
+    dout,
+    q,
+    k,
+    v,
+    out,
+    softmax_lse,
+    softmax_scale,
+    dropout_p=0,
+    causal=True,
+    window_size=(-1, -1),
+    alibi_slopes=None,
+    deterministic=False,
 ):
-    assert causal, "stripe flash attn only supports causal attention, if not causal, ring flash attn instead"
+    assert (
+        causal
+    ), "stripe flash attn only supports causal attention, if not causal, ring flash attn instead"
     kv_comm = RingComm(process_group)
     d_kv_comm = RingComm(process_group)
     dq, dk, dv = None, None, None
     next_dk, next_dv = None, None
     next_k, next_v = None, None
 
-    block_dq_buffer = torch.empty(
-        q.shape, dtype=q.dtype, device=q.device
-    )
-    block_dk_buffer = torch.empty(
-        k.shape, dtype=k.dtype, device=k.device
-    )
-    block_dv_buffer = torch.empty(
-        v.shape, dtype=v.dtype, device=v.device
-    )
+    block_dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
+    block_dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
+    block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
             next_k = kv_comm.send_recv(k, next_k)
@@ -104,6 +103,7 @@ def stripe_flash_attn_backward(
             kv_comm.commit()
 
         shift_causal = step > kv_comm.rank
+        softmax_lse_1 = None
         if not shift_causal:
             _flash_attn_backward(
                 dout,
@@ -124,21 +124,19 @@ def stripe_flash_attn_backward(
                 rng_state=None,
             )
         else:
-            shrink_size = list(q.shape)
-            shrink_size[1] -= 1
-            block_dq_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
-            block_dk_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
-            block_dv_buffer = torch.empty(shrink_size, dtype=q.dtype, device=q.device)
+            if softmax_lse_1 is None:
+                # lazy init, since the last rank does not need softmax_lse_1
+                softmax_lse_1 = softmax_lse[:, :, 1:].contiguous()
             _flash_attn_backward(
                 dout[:, 1:],
                 q[:, 1:],
                 k[:, :-1],
                 v[:, :-1],
                 out[:, 1:],
-                softmax_lse[:, :, 1:].contiguous(),
-                block_dq_buffer,
-                block_dk_buffer,
-                block_dv_buffer,
+                softmax_lse_1,
+                block_dq_buffer[:, 1:],
+                block_dk_buffer[:, :-1],
+                block_dv_buffer[:, :-1],
                 dropout_p,
                 softmax_scale,
                 causal,
@@ -156,7 +154,7 @@ def stripe_flash_attn_backward(
             if not shift_causal:
                 dq += block_dq_buffer
             else:
-                dq[:, 1:] += block_dq_buffer
+                dq[:, 1:] += block_dq_buffer[:, 1:]
             d_kv_comm.wait()
             if not shift_causal:
                 dk = block_dk_buffer + next_dk
@@ -164,8 +162,8 @@ def stripe_flash_attn_backward(
             else:
                 dk = next_dk
                 dv = next_dv
-                dk[:, :-1] += block_dk_buffer
-                dv[:, :-1] += block_dv_buffer
+                dk[:, :-1] += block_dk_buffer[:, :-1]
+                dv[:, :-1] += block_dv_buffer[:, :-1]
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
@@ -184,22 +182,22 @@ def stripe_flash_attn_backward(
 class StripeFlashAttnQKVPackedFunc(torch.autograd.Function):
     @staticmethod
     def forward(
-            ctx,
-            qkv,
-            dropout_p,
-            softmax_scale,
-            causal,
-            window_size,
-            alibi_slopes,
-            deterministic,
-            return_softmax,
-            group,
+        ctx,
+        qkv,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        alibi_slopes,
+        deterministic,
+        return_softmax,
+        group,
     ):
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
 
         assert alibi_slopes is None
-        q = qkv[:, :, 0].contiguous()
+        q = qkv[:, :, 0]
         k = qkv[:, :, 1].contiguous()
         v = qkv[:, :, 2].contiguous()
         out, softmax_lse = stripe_flash_attn_forward(
@@ -249,15 +247,15 @@ class StripeFlashAttnQKVPackedFunc(torch.autograd.Function):
 
 
 def stripe_flash_attn_qkvpacked_func(
-        qkv,
-        dropout_p=0.0,
-        softmax_scale=None,
-        causal=False,
-        window_size=(-1, -1),  # -1 means infinite context window
-        alibi_slopes=None,
-        deterministic=False,
-        return_attn_probs=False,
-        group=None,
+    qkv,
+    dropout_p=0.0,
+    softmax_scale=None,
+    causal=False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    alibi_slopes=None,
+    deterministic=False,
+    return_attn_probs=False,
+    group=None,
 ):
     return StripeFlashAttnQKVPackedFunc.apply(
         qkv,
