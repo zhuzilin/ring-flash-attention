@@ -28,7 +28,7 @@ def stripe_flash_attn_forward(
             next_v: torch.Tensor = comm.send_recv(v)
             comm.commit()
 
-        if comm.rank <= step:
+        if step <= comm.rank:
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_forward(
                 q,
                 k,
@@ -40,8 +40,6 @@ def stripe_flash_attn_forward(
                 alibi_slopes=alibi_slopes,
                 return_softmax=True and dropout_p > 0,
             )
-            block_out = block_out.to(torch.float32)
-            block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_forward(
@@ -55,8 +53,6 @@ def stripe_flash_attn_forward(
                 alibi_slopes=alibi_slopes,
                 return_softmax=True and dropout_p > 0,
             )
-            block_out = block_out.to(torch.float32)
-            block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse,
                                           slice_=(slice(None), slice(None, -1)))
 
@@ -65,7 +61,7 @@ def stripe_flash_attn_forward(
             k = next_k
             v = next_v
 
-    return out, lse
+    return out.to(q.dtype), lse
 
 
 def stripe_flash_attn_backward(
@@ -96,51 +92,58 @@ def stripe_flash_attn_backward(
             next_v = kv_comm.send_recv(v, **send_recv_kwargs)
             kv_comm.commit()
 
-        if kv_comm.rank <= step:
-            block_dq, block_dk, block_dv = _flash_attn_backward(
+        if step <= kv_comm.rank:
+            block_dq, block_dk, block_dv, _ = _flash_attn_backward(
                 dout,
                 q,
                 k,
                 v,
                 out,
                 softmax_lse,
-                softmax_scale,
+                dq,
+                dk,
+                dv,
                 dropout_p,
+                softmax_scale,
                 causal,
                 window_size,
                 alibi_slopes,
                 deterministic,
+                rng_state=None,
             )
             if dq is None:
                 dq = block_dq
                 dk = block_dk
                 dv = block_dv
             else:
-                dq += block_dq
+                # dq += block_dq
                 d_kv_comm.wait()
                 dk = next_dk + block_dk
                 dv = next_dv + block_dv
         else:
-            block_dq, block_dk, block_dv = _flash_attn_backward(
-                dout[:, 1:, ],
-                q[:, 1:],
-                k[:, :-1, ],
-                v[:, :-1, ],
-                out[:, 1:, ],
-                softmax_lse[:, 1:, ],
-                softmax_scale,
+            block_dq, block_dk, block_dv, _ = _flash_attn_backward(
+                dout,
+                q,
+                k,
+                v,
+                out,
+                softmax_lse,
+                dq,
+                dk,
+                dv,
                 dropout_p,
+                softmax_scale,
                 causal,
                 window_size,
                 alibi_slopes,
                 deterministic,
+                rng_state=None,
             )
-            dq[:, 1:, ] += block_dq
             d_kv_comm.wait()
             dk = next_dk
-            dk[:, :-1, ] += block_dk
+            dk[:, :-1, ] += block_dk[:, :-1, ]
             dv = next_dv
-            dv[:, :-1, ] += block_dv
+            dv[:, :-1, ] += block_dv[:, :-1, ]
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
