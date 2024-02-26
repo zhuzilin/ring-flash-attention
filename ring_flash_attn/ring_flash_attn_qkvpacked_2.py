@@ -39,8 +39,6 @@ def ring_flash_attn_forward_2(
                 alibi_slopes=alibi_slopes,
                 return_softmax=True and dropout_p > 0,
             )
-            block_out = block_out.to(torch.float32)
-            block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
 
         if step + 1 != comm.world_size:

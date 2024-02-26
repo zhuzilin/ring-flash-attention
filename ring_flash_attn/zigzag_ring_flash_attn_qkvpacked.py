@@ -54,8 +54,6 @@ def zigzag_ring_flash_attn_forward(
             alibi_slopes=alibi_slopes,
             return_softmax=True and dropout_p > 0,
         )
-        block_out = block_out.to(torch.float32)
-        block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
         return block_out, block_lse
 
     for step in range(world_size):
@@ -69,7 +67,8 @@ def zigzag_ring_flash_attn_forward(
             )
 
         if step == 0:
-            out, lse = forward(local_q, local_k, local_v, causal=True)
+            block_out, block_lse = forward(local_q, local_k, local_v, causal=True)
+            out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:
             kv_rank0, kv_rank1 = get_zigzag_rank(kv_rank, world_size)
             k0, v0 = None, None

@@ -3,7 +3,27 @@ from typing import Optional, Tuple
 import torch
 import torch.distributed as dist
 
-__all__ = ['send_recv_kv', 'update_out_and_lse', 'RingComm']
+__all__ = ["send_recv_kv", "update_out_and_lse", "RingComm"]
+
+
+@torch.jit.script
+def _update_out_and_lse(
+    out: torch.Tensor,
+    lse: torch.Tensor,
+    block_out: torch.Tensor,
+    block_lse: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    block_out = block_out.to(torch.float32)
+    block_lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
+
+    new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
+
+    out = torch.exp(lse - new_lse) * out + torch.exp(block_lse - new_lse) * block_out
+
+    lse = new_lse
+    return out, lse
+
+
 def update_out_and_lse(
     out: Optional[torch.Tensor],
     lse: Optional[torch.Tensor],
@@ -14,28 +34,16 @@ def update_out_and_lse(
     if out is None:
         if slice_ is not None:
             raise RuntimeError("first update_out_and_lse should not pass slice_ args")
-        out = block_out
-        lse = block_lse
-    else:
-        lse_with_slice = lse
-        if slice_ is not None:
-            lse_with_slice = lse[slice_]
-
-        new_lse = lse_with_slice + torch.log(1 + torch.exp(block_lse - lse_with_slice))
-
-        sliced_out = out
-        if slice_ is not None:
-            sliced_out = out[slice_]
-
-        out[slice_] = (
-            torch.exp(lse_with_slice - new_lse) * sliced_out
-            + torch.exp(block_lse - new_lse) * block_out
+        out = block_out.to(torch.float32)
+        lse = block_lse.transpose(1, 2).unsqueeze(dim=-1)
+    elif slice_ is not None:
+        slice_out, slice_lse = out[slice_], lse[slice_]
+        slice_out, slice_lse = _update_out_and_lse(
+            slice_out, slice_lse, block_out, block_lse
         )
-
-        if slice_ is not None:
-            lse[slice_] = new_lse
-        else:
-            lse = new_lse
+        out[slice_], lse[slice_] = slice_out, slice_lse
+    else:
+        out, lse = _update_out_and_lse(out, lse, block_out, block_lse)
     return out, lse
 
 
@@ -47,8 +55,9 @@ class RingComm:
         self.world_size = dist.get_world_size(self._process_group)
         self._reqs = None
 
-    def send_recv(self, to_send: torch.Tensor,
-                  send_direction="incr", inplace=False) -> torch.Tensor:
+    def send_recv(
+        self, to_send: torch.Tensor, send_direction="incr", inplace=False
+    ) -> torch.Tensor:
         if inplace:
             res = to_send
         else:
