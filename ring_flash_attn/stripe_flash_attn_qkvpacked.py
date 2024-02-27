@@ -18,7 +18,7 @@ def stripe_flash_attn_forward(
 ):
     assert (
         causal
-    ), "stripe flash attn only supports causal attention, if not causal, ring flash attn instead"
+    ), "stripe flash attn only supports causal attention, if not causal, use ring flash attn instead"
     comm = RingComm(process_group)
 
     out = None

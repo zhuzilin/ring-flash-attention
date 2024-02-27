@@ -2,16 +2,18 @@ from flash_attn import flash_attn_varlen_qkvpacked_func
 import torch
 import torch.distributed as dist
 from ring_flash_attn import ring_flash_attn_varlen_qkvpacked_func
-from time import time
+import torch.cuda
 
 
 def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     torch.cuda.empty_cache()
+    dtype = torch.bfloat16
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)
 
-    seqlen = 8192
+    seqlen = 1024 * 8
     nheads = 5
     d = 128
     dropout_p = 0
@@ -37,29 +39,29 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
         (cu_seqlens[1:] - cu_seqlens[:1]).max().item() for cu_seqlens in cu_seqlens_list
     ]
 
-    dist.barrier()
-    torch.cuda.synchronize(device=device)
-    start = time()
+    begin = torch.cuda.Event(enable_timing=True)
+    begin.record()
+    with torch.no_grad():
 
-    for i in range(num_benchmark_iter):
-        _ = f(
-            qkv,
-            cu_seqlens_list[i % len(cu_seqlens_list)],
-            max_seqlen_list[i % len(max_seqlen_list)],
-            dropout_p=dropout_p,
-            causal=causal,
-            window_size=(-1, -1),
-            alibi_slopes=None,
-            deterministic=deterministic,
-            return_attn_probs=False,
-        )
+        for i in range(num_benchmark_iter):
+            _ = f(
+                qkv,
+                cu_seqlens_list[i % len(cu_seqlens_list)],
+                max_seqlen_list[i % len(max_seqlen_list)],
+                dropout_p=dropout_p,
+                causal=causal,
+                window_size=(-1, -1),
+                alibi_slopes=None,
+                deterministic=deterministic,
+                return_attn_probs=False,
+            )
+    end = torch.cuda.Event(enable_timing=True)
+    end.record()
     torch.cuda.synchronize(device=device)
-    end = time()
+    time = begin.elapsed_time(end) / 1000.0
 
     if rank == 0 and log:
-        print(
-            f"{f.__name__} {num_benchmark_iter / (end - start)} iter/s, {end - start} sec"
-        )
+        print(f"{f.__name__} {num_benchmark_iter / time} iter/s, {time} sec")
 
 
 if __name__ == "__main__":

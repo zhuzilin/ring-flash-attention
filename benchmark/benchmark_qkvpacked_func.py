@@ -12,9 +12,11 @@ import torch.cuda
 
 def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     torch.cuda.empty_cache()
+    dtype = torch.bfloat16
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)
 
     batch_size = 1
     seqlen = 1024 * 8
@@ -30,8 +32,6 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     qkv = torch.randn(
         batch_size, seqlen, 3, nheads, d, device=device, dtype=dtype, requires_grad=True
     )
-    torch.cuda.synchronize(device=device)
-    dist.barrier()
     begin = torch.cuda.Event(enable_timing=True)
     begin.record()
     with torch.no_grad():
@@ -49,27 +49,20 @@ def benchmark_forward(f, num_benchmark_iter=1000, log=True):
     end.record()
     torch.cuda.synchronize(device=device)
     time = begin.elapsed_time(end) / 1000.0
-    dist.barrier()
 
     if rank == 0 and log:
-        print(
-            f"{f.__name__} {num_benchmark_iter / time} iter/s, {time} sec"
-        )
+        print(f"{f.__name__} {num_benchmark_iter / time} iter/s, {time} sec")
 
 
 if __name__ == "__main__":
     dist.init_process_group("nccl")
     rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    dtype = torch.bfloat16
-    device = torch.device(f"cuda:{rank}")
-    torch.cuda.set_device(device)
 
     if rank == 0:
         print("warmuping...")
     benchmark_forward(flash_attn_qkvpacked_func, log=False)
-    benchmark_forward(ring_flash_attn_qkvpacked_func_v2, log=False)
     benchmark_forward(ring_flash_attn_qkvpacked_func, log=False)
+    benchmark_forward(ring_flash_attn_qkvpacked_func_v2, log=False)
     benchmark_forward(stripe_flash_attn_qkvpacked_func, log=False)
     benchmark_forward(zigzag_ring_flash_attn_qkvpacked_func, log=False)
     if rank == 0:

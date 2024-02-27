@@ -21,10 +21,12 @@ def ring_flash_attn_forward_2(
     out = None
     lse = None
 
+    next_k, next_v = None, None
+
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k: torch.Tensor = comm.send_recv(k)
-            next_v: torch.Tensor = comm.send_recv(v)
+            next_k: torch.Tensor = comm.send_recv(k, next_k)
+            next_v: torch.Tensor = comm.send_recv(v, next_v)
             comm.commit()
 
         if not causal or step <= comm.rank:
@@ -75,10 +77,13 @@ def ring_flash_attn_backward_2(
     block_dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
     block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
 
+    next_dk, next_dv = None, None
+    next_k, next_v = None, None
+
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k)
-            next_v = kv_comm.send_recv(v)
+            next_k = kv_comm.send_recv(k, next_k)
+            next_v = kv_comm.send_recv(v, next_v)
             kv_comm.commit()
         if step <= kv_comm.rank or not causal:
             bwd_causal = causal and step == 0
@@ -120,8 +125,8 @@ def ring_flash_attn_backward_2(
             k = next_k
             v = next_v
 
-        next_dk = d_kv_comm.send_recv(dk)
-        next_dv = d_kv_comm.send_recv(dv)
+        next_dk = d_kv_comm.send_recv(dk, next_dk)
+        next_dv = d_kv_comm.send_recv(dv, next_dv)
         d_kv_comm.commit()
 
     d_kv_comm.wait()
