@@ -3,7 +3,6 @@ import torch
 import torch.distributed as dist
 from ring_flash_attn import (
     ring_flash_attn_qkvpacked_func,
-    ring_flash_attn_qkvpacked_func_v2,
     zigzag_ring_flash_attn_qkvpacked_func,
     stripe_flash_attn_qkvpacked_func,
 )
@@ -80,7 +79,6 @@ if __name__ == "__main__":
     for f in [
         flash_attn_qkvpacked_func,
         ring_flash_attn_qkvpacked_func,
-        ring_flash_attn_qkvpacked_func_v2,
         zigzag_ring_flash_attn_qkvpacked_func,
         stripe_flash_attn_qkvpacked_func,
     ]:

@@ -3,7 +3,6 @@
 This repo implements the [RingAttention](https://github.com/lhao499/RingAttention) with [FlashAttention](https://github.com/Dao-AILab/flash-attention). Currently, this repo implements:
 
 - `ring_flash_attn_qkvpacked_func`: ring attention version of `flash_attn_qkvpacked_func`
-- `ring_flash_attn_qkvpacked_func_v2`: a different communication pattern of  `ring_flash_attn_qkvpacked_func`
 - `ring_flash_attn_varlen_qkvpacked_func`: ring attention version of `flash_attn_varlen_qkvpacked_func`
 - `zigzag_ring_flash_attn_qkvpacked_func`: an optimized version of `ring_flash_attn_varlen_qkvpacked_func`, see [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
 - `stripe_flash_attn_qkvpacked_func`: stripe attention version of `ring_flash_attn_varlen_qkvpacked_func`, the block size is set to 1 to use flash attn api.
@@ -12,12 +11,12 @@ The main idea is to use the `softmax_lse` output from the flash attention kernel
 
 The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](benchmark/benchmark_qkvpacked_func.py)):
 
-|                      | theoretic flash_attn | ring_attn | ring_attn_v2 | zigzag_ring | stripe_attn |
-| -------------------- | -------------------- | --------- | ------------ | ----------- | ----------- |
-| fwd only (iter/sec)  | 2418.4/8 = 302.3     | 208.8     | 208.0        | 283.0       | 259.6       |
-|                      |                      | 68.8%     | 68.8%        | **93.6%**   | 85.9%       |
-| fwd + bwd (iter/sec) | 705.2/8 = 88.2       | 54.1      | 54.3         | 75.7        | 76.9        |
-|                      |                      | 61.3%     | 61.5%        | 85.9%       | **87.2%**   |
+|                      | theoretic flash_attn | ring_attn | zigzag_ring | stripe_attn |
+| -------------------- | -------------------- | --------- | ----------- | ----------- |
+| fwd only (iter/sec)  | 2418.4/8 = 302.3     | 208.0     | 283.0       | 259.6       |
+|                      |                      | 68.8%     | **93.6%**   | 85.9%       |
+| fwd + bwd (iter/sec) | 705.2/8 = 88.2       | 54.3      | 75.7        | 76.9        |
+|                      |                      | 61.5%     | 85.9%       | **87.2%**   |
 
 - Note that when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
 

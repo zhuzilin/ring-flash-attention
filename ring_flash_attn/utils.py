@@ -47,6 +47,26 @@ def update_out_and_lse(
     return out, lse
 
 
+def flatten_varlen_lse(lse, cu_seqlens):
+    new_lse = []
+    for i in range(len(cu_seqlens) - 1):
+        start, end = cu_seqlens[i], cu_seqlens[i + 1]
+        new_lse.append(lse[i, :, : end - start])
+    return torch.cat(new_lse, dim=1)
+
+
+def unflatten_varlen_lse(lse, cu_seqlens, max_seqlen):
+    num_seq = len(cu_seqlens) - 1
+    num_head = lse.shape[-2]
+    new_lse = torch.empty(
+        (num_seq, max_seqlen, num_head, 1), dtype=torch.float32, device=lse.device
+    )
+    for i in range(num_seq):
+        start, end = cu_seqlens[i], cu_seqlens[i + 1]
+        new_lse[i, : end - start] = lse[start:end]
+    return new_lse
+
+
 class RingComm:
     def __init__(self, process_group: dist.ProcessGroup):
         self._process_group = process_group

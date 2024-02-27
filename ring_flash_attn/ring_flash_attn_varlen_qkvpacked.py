@@ -4,27 +4,12 @@ from flash_attn.flash_attn_interface import (
     _flash_attn_varlen_forward,
     _flash_attn_varlen_backward,
 )
-from .utils import send_recv_kv, update_out_and_lse
-
-
-def flatten_lse(lse, cu_seqlens):
-    new_lse = []
-    for i in range(len(cu_seqlens) - 1):
-        start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        new_lse.append(lse[i, :, : end - start])
-    return torch.cat(new_lse, dim=1)
-
-
-def unflatten_lse(lse, cu_seqlens, max_seqlen):
-    num_seq = len(cu_seqlens) - 1
-    num_head = lse.shape[-2]
-    new_lse = torch.empty(
-        (num_seq, max_seqlen, num_head, 1), dtype=torch.float32, device=lse.device
-    )
-    for i in range(num_seq):
-        start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        new_lse[i, : end - start] = lse[start:end]
-    return new_lse
+from .utils import (
+    send_recv_kv,
+    update_out_and_lse,
+    flatten_varlen_lse,
+    unflatten_varlen_lse,
+)
 
 
 def ring_flash_attn_varlen_forward(
@@ -80,7 +65,7 @@ def ring_flash_attn_varlen_forward(
                 alibi_slopes=alibi_slopes,
                 return_softmax=True and dropout_p > 0,
             )
-            block_lse = flatten_lse(
+            block_lse = flatten_varlen_lse(
                 block_lse,
                 cu_seqlens=local_cu_seqlens,
             )
@@ -88,7 +73,7 @@ def ring_flash_attn_varlen_forward(
 
     out = out.to(local_q.dtype)
     lse = (
-        unflatten_lse(lse, local_cu_seqlens, local_max_seqlen)
+        unflatten_varlen_lse(lse, local_cu_seqlens, local_max_seqlen)
         .squeeze(dim=-1)
         .transpose(1, 2)
         .contiguous()
