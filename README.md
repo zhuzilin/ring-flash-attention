@@ -18,7 +18,9 @@ The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](be
 | fwd + bwd (iter/sec) | 705.2/8 = 88.2       | 54.3      | 75.7        | 76.9        |
 |                      |                      | 61.5%     | 85.9%       | **87.2%**   |
 
-- Note that when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
+Note that
+- when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
+- the varlen version is slow at the moment, please use the non-varlen version if possible.
 
 ### Limits
 
@@ -30,10 +32,8 @@ And also because we need to save extra fp32 buffer during computation, the memor
 
 - [x] Implement `ring_flash_attn_varlen_qkvpacked_func`
 - [x] Implement `zigzag_ring_flash_attn_qkvpacked_func` [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
-
 - [x] Implement `stripe_flash_attn_qkvpacked_func`
-
-- [ ] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
+- [x] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
 - [ ] Try to upstream to flash attention.
 
 ### Test

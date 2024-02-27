@@ -1,7 +1,10 @@
 from flash_attn import flash_attn_varlen_qkvpacked_func
 import torch
 import torch.distributed as dist
-from ring_flash_attn import ring_flash_attn_varlen_qkvpacked_func
+from ring_flash_attn import (
+    ring_flash_attn_varlen_qkvpacked_func,
+    zigzag_ring_flash_attn_varlen_qkvpacked_func,
+)
 import torch.cuda
 
 
@@ -43,7 +46,6 @@ def benchmark(f, num_iter=100, forward_only=True, log=True):
     begin.record()
     if forward_only:
         with torch.no_grad():
-
             for i in range(num_iter):
                 _ = f(
                     qkv,
@@ -89,6 +91,7 @@ if __name__ == "__main__":
     for f in [
         flash_attn_varlen_qkvpacked_func,
         ring_flash_attn_varlen_qkvpacked_func,
+        zigzag_ring_flash_attn_varlen_qkvpacked_func,
     ]:
         torch.cuda.empty_cache()
         if rank == 0:
