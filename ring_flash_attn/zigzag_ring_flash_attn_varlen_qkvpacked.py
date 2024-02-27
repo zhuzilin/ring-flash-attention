@@ -12,11 +12,8 @@ from .utils import (
 )
 
 
-def maybe_div2(x, cond):
-    return x // 2 if cond else x
-
-
-def get_half(x, cu_seqlens, *, front):
+@torch.jit.script
+def get_half(x, cu_seqlens, *, front: bool):
     xs = []
     for i in range(len(cu_seqlens) - 1):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
@@ -28,14 +25,15 @@ def get_half(x, cu_seqlens, *, front):
     return torch.cat(xs, dim=0)
 
 
-def get_half_lse(lse, cu_seqlens, *, front):
+@torch.jit.script
+def get_half_lse(lse, cu_seqlens, *, front: bool):
     new_lse = torch.empty(
         (lse.shape[0], lse.shape[1], lse.shape[2] // 2),
         dtype=lse.dtype,
         device=lse.device,
     )
     for i in range(len(cu_seqlens) - 1):
-        seqlen = cu_seqlens[i + 1] - cu_seqlens[i]
+        seqlen = (cu_seqlens[i + 1] - cu_seqlens[i]).item()
         if front:
             start, end = 0, seqlen // 2
         else:
@@ -44,7 +42,8 @@ def get_half_lse(lse, cu_seqlens, *, front):
     return new_lse
 
 
-def add_half(x, block_x, cu_seqlens, *, front):
+@torch.jit.script
+def add_half(x, block_x, cu_seqlens, *, front: bool):
     for i in range(len(cu_seqlens) - 1):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
         block_start, block_end = start // 2, end // 2

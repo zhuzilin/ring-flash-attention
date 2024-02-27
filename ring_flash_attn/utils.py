@@ -47,14 +47,15 @@ def update_out_and_lse(
     return out, lse
 
 
+@torch.jit.script
 def update_out_and_lse_varlen_half(
     out: torch.Tensor,
     lse: torch.Tensor,
     block_out: torch.Tensor,
     block_lse: torch.Tensor,
     *,
-    cu_seqlens,
-    front,
+    cu_seqlens: torch.Tensor,
+    front: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     for i in range(len(cu_seqlens) - 1):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
@@ -72,6 +73,7 @@ def update_out_and_lse_varlen_half(
     return out, lse
 
 
+@torch.jit.script
 def flatten_varlen_lse(lse, cu_seqlens):
     new_lse = []
     for i in range(len(cu_seqlens) - 1):
@@ -80,7 +82,8 @@ def flatten_varlen_lse(lse, cu_seqlens):
     return torch.cat(new_lse, dim=1)
 
 
-def unflatten_varlen_lse(lse, cu_seqlens, max_seqlen):
+@torch.jit.script
+def unflatten_varlen_lse(lse, cu_seqlens, max_seqlen: int):
     num_seq = len(cu_seqlens) - 1
     num_head = lse.shape[-2]
     new_lse = torch.empty(
