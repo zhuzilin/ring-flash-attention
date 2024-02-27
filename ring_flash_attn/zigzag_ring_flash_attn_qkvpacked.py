@@ -100,6 +100,7 @@ def zigzag_ring_flash_attn_backward(
     dq, dk, dv = None, None, None
     next_dk, next_dv = None, None
     next_k, next_v = None, None
+    dk_comm_buffer, dv_comm_buffer = None, None
 
     dout1 = dout.chunk(2, dim=1)[1]
     q1 = q.chunk(2, dim=1)[1]
@@ -157,6 +158,7 @@ def zigzag_ring_flash_attn_backward(
                 dq[:, block_seq_len:] += dq_buffer[:, :block_seq_len]
 
             d_kv_comm.wait()
+            dk_comm_buffer, dv_comm_buffer = dk, dv
             dk, dv = next_dk, next_dv
 
             if step <= kv_comm.rank:
@@ -171,8 +173,8 @@ def zigzag_ring_flash_attn_backward(
             k = next_k
             v = next_v
 
-        next_dk = d_kv_comm.send_recv(dk)
-        next_dv = d_kv_comm.send_recv(dv)
+        next_dk = d_kv_comm.send_recv(dk, dk_comm_buffer)
+        next_dv = d_kv_comm.send_recv(dv, dv_comm_buffer)
         d_kv_comm.commit()
 
     d_kv_comm.wait()
