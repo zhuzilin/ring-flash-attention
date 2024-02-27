@@ -5,7 +5,7 @@ from flash_attn.flash_attn_interface import (
     _flash_attn_varlen_backward,
 )
 from .utils import (
-    send_recv_kv,
+    RingComm,
     update_out_and_lse,
     flatten_varlen_lse,
     unflatten_varlen_lse,
@@ -14,11 +14,11 @@ from .utils import (
 
 def ring_flash_attn_varlen_forward(
     process_group,
-    local_q,
-    local_k,
-    local_v,
-    local_cu_seqlens,
-    local_max_seqlen,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens,
+    max_seqlen,
     softmax_scale,
     dropout_p=0,
     causal=True,
@@ -26,54 +26,47 @@ def ring_flash_attn_varlen_forward(
     alibi_slopes=None,
     deterministic=False,
 ):
-    rank = dist.get_rank(group=process_group)
-    world_size = dist.get_world_size(group=process_group)
-
-    assert local_q.shape[-1] % 8 == 0, "unpadded head size not supported"
+    comm = RingComm(process_group)
 
     out = None
     lse = None
-    next_k = local_k
-    next_v = local_v
-    next_kv_rank = rank
-    reqs = None
+    next_k, next_v = None, None
 
-    for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
-        k, v, kv_rank = next_k, next_v, next_kv_rank
-        if step + 1 < world_size:
-            next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-                process_group, local_k, local_v, step + 1, causal
-            )
-        if k is not None:
-            assert not causal or kv_rank <= rank
-            local_causal = causal and kv_rank == rank
+    for step in range(comm.world_size):
+        if step + 1 != comm.world_size:
+            next_k: torch.Tensor = comm.send_recv(k)
+            next_v: torch.Tensor = comm.send_recv(v)
+            comm.commit()
+        if not causal or step <= comm.rank:
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(
-                local_q,
+                q,
                 k,
                 v,
-                local_cu_seqlens,
-                local_cu_seqlens,
-                local_max_seqlen,
-                local_max_seqlen,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
                 dropout_p,
                 softmax_scale,
-                causal=local_causal,
+                causal=causal and step == 0,
                 window_size=window_size,
                 alibi_slopes=alibi_slopes,
                 return_softmax=True and dropout_p > 0,
             )
             block_lse = flatten_varlen_lse(
                 block_lse,
-                cu_seqlens=local_cu_seqlens,
+                cu_seqlens=cu_seqlens,
             )
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
 
-    out = out.to(local_q.dtype)
+        if step + 1 != comm.world_size:
+            comm.wait()
+            k = next_k
+            v = next_v
+
+    out = out.to(q.dtype)
     lse = (
-        unflatten_varlen_lse(lse, local_cu_seqlens, local_max_seqlen)
+        unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
         .squeeze(dim=-1)
         .transpose(1, 2)
         .contiguous()
@@ -83,11 +76,11 @@ def ring_flash_attn_varlen_forward(
 
 def ring_flash_attn_varlen_backward(
     process_group,
-    local_dout,
-    local_q,
-    local_k,
-    local_v,
-    local_out,
+    dout,
+    q,
+    k,
+    v,
+    out,
     softmax_lse,
     cu_seqlens,
     max_seqlen,
@@ -98,50 +91,30 @@ def ring_flash_attn_varlen_backward(
     alibi_slopes=None,
     deterministic=False,
 ):
-    rank = dist.get_rank(group=process_group)
-    world_size = dist.get_world_size(group=process_group)
+    kv_comm = RingComm(process_group)
+    d_kv_comm = RingComm(process_group)
+    dq, dk, dv = None, None, None
+    next_dk, next_dv = None, None
 
-    local_dq = None
-    local_dk = None
-    local_dv = None
+    block_dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
+    block_dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
+    block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
 
-    next_k = local_k
-    next_v = local_v
-    next_kv_rank = rank
-    reqs = None
-
-    block_dq_buffer = torch.empty(
-        local_q.shape, dtype=local_q.dtype, device=local_q.device
-    )
-    block_dk_buffer = torch.empty(
-        local_k.shape, dtype=local_k.dtype, device=local_k.device
-    )
-    block_dv_buffer = torch.empty(
-        local_v.shape, dtype=local_v.dtype, device=local_v.device
-    )
-
-    remote_dk = None
-    remote_dv = None
-    grad_reqs = None
-    for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
-        k, v, kv_rank = next_k, next_v, next_kv_rank
-        if step + 1 < world_size:
-            next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-                process_group, local_k, local_v, step + 1, causal
-            )
-        if k is not None:
-            assert not causal or kv_rank <= rank
-            local_causal = causal and kv_rank == rank
-
+    next_dk, next_dv = None, None
+    next_k, next_v = None, None
+    for step in range(kv_comm.world_size):
+        if step + 1 != kv_comm.world_size:
+            next_k = kv_comm.send_recv(k)
+            next_v = kv_comm.send_recv(v)
+            kv_comm.commit()
+        if step <= kv_comm.rank or not causal:
+            bwd_causal = causal and step == 0
             _flash_attn_varlen_backward(
-                local_dout,
-                local_q,
+                dout,
+                q,
                 k,
                 v,
-                local_out,
+                out,
                 softmax_lse,
                 block_dq_buffer,
                 block_dk_buffer,
@@ -152,47 +125,39 @@ def ring_flash_attn_varlen_backward(
                 max_seqlen,
                 dropout_p,
                 softmax_scale,
-                local_causal,
+                bwd_causal,
                 window_size,
                 alibi_slopes,
                 deterministic,
                 rng_state=None,
             )
 
-            block_dq = block_dq_buffer.to(torch.float32)
-            block_dk = block_dk_buffer.to(torch.float32)
-            block_dv = block_dv_buffer.to(torch.float32)
-
-            if local_dq is None:
-                local_dq = block_dq
-                local_dk, local_dv = block_dk, block_dv
+            if dq is None:
+                dq = block_dq_buffer.to(torch.float32)
+                dk = block_dk_buffer.to(torch.float32)
+                dv = block_dv_buffer.to(torch.float32)
             else:
-                local_dq += block_dq
+                dq += block_dq_buffer
+                d_kv_comm.wait()
+                dk = block_dk_buffer + next_dk
+                dv = block_dv_buffer + next_dv
+        elif step != 0:
+            d_kv_comm.wait()
+            dk = next_dk
+            dv = next_dv
 
-        if grad_reqs is not None:
-            for req in grad_reqs:
-                req.wait()
-            if remote_dk is not None:
-                local_dk += remote_dk
-                local_dv += remote_dv
+        if step + 1 != kv_comm.world_size:
+            kv_comm.wait()
+            k = next_k
+            v = next_v
 
-        remote_dk, remote_dv, _, grad_reqs = send_recv_kv(
-            process_group,
-            block_dk,
-            block_dv,
-            step,
-            causal,
-            is_grad=True,
-        )
+        next_dk = d_kv_comm.send_recv(dk)
+        next_dv = d_kv_comm.send_recv(dv)
+        d_kv_comm.commit()
 
-    if grad_reqs is not None:
-        for req in grad_reqs:
-            req.wait()
-        if remote_dk is not None:
-            local_dk += remote_dk
-            local_dv += remote_dv
+    d_kv_comm.wait()
 
-    return local_dq, local_dk, local_dv
+    return dq.to(torch.bfloat16), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
 
 class RingFlashAttnVarlenQKVPackedFunc(torch.autograd.Function):

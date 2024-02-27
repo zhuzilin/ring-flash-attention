@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from .utils import send_recv_kv, RingComm, update_out_and_lse
+from .utils import RingComm, update_out_and_lse
 
 
 def get_zigzag_rank(rank, world_size):
