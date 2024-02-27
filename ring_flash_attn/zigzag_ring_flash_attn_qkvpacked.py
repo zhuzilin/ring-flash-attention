@@ -4,11 +4,6 @@ from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_bac
 from .utils import send_recv_kv, update_out_and_lse
 
 
-def get_zigzag_rank(rank, world_size):
-    rank0, rank1 = rank, 2 * world_size - 1 - rank
-    return rank0, rank1
-
-
 def zigzag_ring_flash_attn_forward(
     process_group,
     local_q,
@@ -24,10 +19,9 @@ def zigzag_ring_flash_attn_forward(
     assert causal == True, "zigzag ring is meaningless for causal=False"
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
-    rank0, rank1 = get_zigzag_rank(rank, world_size)
 
-    local_q1 = local_q.chunk(2, dim=1)[1]
-    seq_len_per_device = local_q.shape[1]
+    block_seq_len = local_q.shape[1] // 2
+    local_q1 = local_q[:, block_seq_len:]
 
     assert local_q.shape[-1] % 8 == 0, "unpadded head size not supported"
 
@@ -65,25 +59,20 @@ def zigzag_ring_flash_attn_forward(
         if step == 0:
             block_out, block_lse = forward(local_q, local_k, local_v, causal=True)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
+        elif kv_rank <= rank:
+            k0 = k[:, :block_seq_len]
+            v0 = v[:, :block_seq_len]
+            block_out, block_lse = forward(local_q, k0, v0, causal=False)
+            out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:
-            kv_rank0, kv_rank1 = get_zigzag_rank(kv_rank, world_size)
-            k0, v0 = None, None
-            assert kv_rank1 > rank0
-            if kv_rank0 < rank0:
-                assert kv_rank1 > rank1
-                k0, v0 = k.chunk(2, dim=1)[0], v.chunk(2, dim=1)[0]
-                block_out, block_lse = forward(local_q, k0, v0, causal=False)
-                out, lse = update_out_and_lse(out, lse, block_out, block_lse)
-            else:
-                assert kv_rank1 < rank1
-                block_out, block_lse = forward(local_q1, k, v, causal=False)
-                out, lse = update_out_and_lse(
-                    out,
-                    lse,
-                    block_out,
-                    block_lse,
-                    slice_=(slice(None), slice(seq_len_per_device // 2, None)),
-                )
+            block_out, block_lse = forward(local_q1, k, v, causal=False)
+            out, lse = update_out_and_lse(
+                out,
+                lse,
+                block_out,
+                block_lse,
+                slice_=(slice(None), slice(block_seq_len, None)),
+            )
 
     out = out.to(local_q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
@@ -108,13 +97,12 @@ def zigzag_ring_flash_attn_backward(
     assert causal == True, "zigzag ring is meaningless for causal=False"
     rank = dist.get_rank(group=process_group)
     world_size = dist.get_world_size(group=process_group)
-    rank0, rank1 = get_zigzag_rank(rank, world_size)
 
-    local_dout1 = local_dout.chunk(2, dim=1)[1]
-    local_q1 = local_q.chunk(2, dim=1)[1]
-    local_out1 = local_out.chunk(2, dim=1)[1]
-    softmax_lse1 = softmax_lse.chunk(2, dim=2)[1].contiguous()
-    seq_len_per_device = local_q.shape[1]
+    block_seq_len = local_q.shape[1] // 2
+    local_dout1 = local_dout[:, block_seq_len:]
+    local_q1 = local_q[:, block_seq_len:]
+    local_out1 = local_out[:, block_seq_len:]
+    softmax_lse1 = softmax_lse[:, :, block_seq_len:].contiguous()
 
     def backward(dout, q, k, v, out, softmax_lse, causal):
         # repeatly allocating buffer may be slow...
@@ -178,27 +166,21 @@ def zigzag_ring_flash_attn_backward(
                 causal=True,
             )
             local_dq, local_dk, local_dv = dq, dk, dv
+        elif kv_rank <= rank:
+            k0, v0 = k.chunk(2, dim=1)[0], v.chunk(2, dim=1)[0]
+            dq, dk0, dv0 = backward(
+                local_dout, local_q, k0, v0, local_out, softmax_lse, causal=False
+            )
+            local_dq += dq
+            dk = torch.zeros_like(k, dtype=torch.float32)
+            dv = torch.zeros_like(v, dtype=torch.float32)
+            dk[:, :block_seq_len] = dk0
+            dv[:, :block_seq_len] = dv0
         else:
-            kv_rank0, kv_rank1 = get_zigzag_rank(kv_rank, world_size)
-            k0, v0 = None, None
-            assert kv_rank1 > rank0
-            if kv_rank0 < rank0:
-                assert kv_rank1 > rank1
-                k0, v0 = k.chunk(2, dim=1)[0], v.chunk(2, dim=1)[0]
-                dq, dk0, dv0 = backward(
-                    local_dout, local_q, k0, v0, local_out, softmax_lse, causal=False
-                )
-                local_dq += dq
-                dk = torch.zeros_like(k, dtype=torch.float32)
-                dv = torch.zeros_like(v, dtype=torch.float32)
-                dk[:, : seq_len_per_device // 2] = dk0
-                dv[:, : seq_len_per_device // 2] = dv0
-            else:
-                assert kv_rank1 < rank1
-                dq1, dk, dv = backward(
-                    local_dout1, local_q1, k, v, local_out1, softmax_lse1, causal=False
-                )
-                local_dq[:, seq_len_per_device // 2 :] += dq1
+            dq1, dk, dv = backward(
+                local_dout1, local_q1, k, v, local_out1, softmax_lse1, causal=False
+            )
+            local_dq[:, block_seq_len:] += dq1
 
         if grad_reqs is not None:
             for req in grad_reqs:

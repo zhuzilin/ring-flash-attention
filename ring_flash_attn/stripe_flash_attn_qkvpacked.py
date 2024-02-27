@@ -28,8 +28,8 @@ def stripe_flash_attn_forward(
 
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k: torch.Tensor = comm.send_recv(k, next_k)
-            next_v: torch.Tensor = comm.send_recv(v, next_v)
+            next_k: torch.Tensor = comm.send_recv(k)
+            next_v: torch.Tensor = comm.send_recv(v)
             comm.commit()
 
         if step <= comm.rank:
@@ -65,8 +65,10 @@ def stripe_flash_attn_forward(
             comm.wait()
             k = next_k
             v = next_v
+
+    out = out.to(q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
-    return out.to(q.dtype), lse
+    return out, lse
 
 
 def stripe_flash_attn_backward(
@@ -98,8 +100,8 @@ def stripe_flash_attn_backward(
     block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k, next_k)
-            next_v = kv_comm.send_recv(v, next_v)
+            next_k = kv_comm.send_recv(k)
+            next_v = kv_comm.send_recv(v)
             kv_comm.commit()
 
         shift_causal = step > kv_comm.rank
@@ -170,8 +172,8 @@ def stripe_flash_attn_backward(
             k = next_k
             v = next_v
 
-        next_dk = d_kv_comm.send_recv(dk, next_dk)
-        next_dv = d_kv_comm.send_recv(dv, next_dv)
+        next_dk = d_kv_comm.send_recv(dk)
+        next_dv = d_kv_comm.send_recv(dv)
         d_kv_comm.commit()
 
     d_kv_comm.wait()
