@@ -1,14 +1,19 @@
 import torch
 import torch.distributed as dist
 from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
-from .utils import send_recv_kv, update_out_and_lse
+from .utils import send_recv_kv, RingComm, update_out_and_lse
+
+
+def get_zigzag_rank(rank, world_size):
+    rank0, rank1 = rank, 2 * world_size - 1 - rank
+    return rank0, rank1
 
 
 def zigzag_ring_flash_attn_forward(
     process_group,
-    local_q,
-    local_k,
-    local_v,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
     softmax_scale,
     dropout_p=0,
     causal=True,
@@ -17,20 +22,14 @@ def zigzag_ring_flash_attn_forward(
     deterministic=False,
 ):
     assert causal == True, "zigzag ring is meaningless for causal=False"
-    rank = dist.get_rank(group=process_group)
-    world_size = dist.get_world_size(group=process_group)
+    comm = RingComm(process_group)
 
-    block_seq_len = local_q.shape[1] // 2
-    local_q1 = local_q[:, block_seq_len:]
-
-    assert local_q.shape[-1] % 8 == 0, "unpadded head size not supported"
+    block_seq_len = q.shape[1] // 2
+    q1 = q[:, block_seq_len:]
 
     out = None
     lse = None
-    next_k = local_k
-    next_v = local_v
-    next_kv_rank = rank
-    reqs = None
+    next_k, next_v = None, None
 
     def forward(q, k, v, causal):
         block_out, _, _, _, _, block_lse, _, _ = _flash_attn_forward(
@@ -46,26 +45,22 @@ def zigzag_ring_flash_attn_forward(
         )
         return block_out, block_lse
 
-    for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
-        k, v, kv_rank = next_k, next_v, next_kv_rank
-        if step + 1 < world_size:
-            next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-                process_group, local_k, local_v, step + 1, causal=False
-            )
+    for step in range(comm.world_size):
+        if step + 1 != comm.world_size:
+            next_k: torch.Tensor = comm.send_recv(k)
+            next_v: torch.Tensor = comm.send_recv(v)
+            comm.commit()
 
         if step == 0:
-            block_out, block_lse = forward(local_q, local_k, local_v, causal=True)
+            block_out, block_lse = forward(q, k, v, causal=True)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
-        elif kv_rank <= rank:
+        elif step <= comm.rank:
             k0 = k[:, :block_seq_len]
             v0 = v[:, :block_seq_len]
-            block_out, block_lse = forward(local_q, k0, v0, causal=False)
+            block_out, block_lse = forward(q, k0, v0, causal=False)
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:
-            block_out, block_lse = forward(local_q1, k, v, causal=False)
+            block_out, block_lse = forward(q1, k, v, causal=False)
             out, lse = update_out_and_lse(
                 out,
                 lse,
@@ -74,18 +69,23 @@ def zigzag_ring_flash_attn_forward(
                 slice_=(slice(None), slice(block_seq_len, None)),
             )
 
-    out = out.to(local_q.dtype)
+        if step + 1 != comm.world_size:
+            comm.wait()
+            k = next_k
+            v = next_v
+
+    out = out.to(q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out, lse
 
 
 def zigzag_ring_flash_attn_backward(
     process_group,
-    local_dout,
-    local_q,
-    local_k,
-    local_v,
-    local_out,
+    dout,
+    q,
+    k,
+    v,
+    out,
     softmax_lse,
     softmax_scale,
     dropout_p=0,
@@ -95,14 +95,17 @@ def zigzag_ring_flash_attn_backward(
     deterministic=False,
 ):
     assert causal == True, "zigzag ring is meaningless for causal=False"
-    rank = dist.get_rank(group=process_group)
-    world_size = dist.get_world_size(group=process_group)
+    kv_comm = RingComm(process_group)
+    d_kv_comm = RingComm(process_group)
+    dq, dk, dv = None, None, None
+    next_dk, next_dv = None, None
+    next_k, next_v = None, None
 
-    block_seq_len = local_q.shape[1] // 2
-    local_dout1 = local_dout[:, block_seq_len:]
-    local_q1 = local_q[:, block_seq_len:]
-    local_out1 = local_out[:, block_seq_len:]
-    softmax_lse1 = softmax_lse[:, :, block_seq_len:].contiguous()
+    dout1 = dout.chunk(2, dim=1)[1]
+    q1 = q.chunk(2, dim=1)[1]
+    out1 = out.chunk(2, dim=1)[1]
+    softmax_lse1 = softmax_lse.chunk(2, dim=2)[1].contiguous()
+    block_seq_len = q.shape[1] // 2
 
     def backward(dout, q, k, v, out, softmax_lse, causal):
         # repeatly allocating buffer may be slow...
@@ -133,76 +136,54 @@ def zigzag_ring_flash_attn_backward(
         dv = dv_buffer.to(torch.float32)
         return dq, dk, dv
 
-    local_dq = None
-    local_dk = None
-    local_dv = None
-
-    next_k = local_k
-    next_v = local_v
-    next_kv_rank = rank
-    reqs = None
-
-    remote_dk = None
-    remote_dv = None
-    grad_reqs = None
-    for step in range(world_size):
-        if reqs is not None:
-            for req in reqs:
-                req.wait()
-        k, v, kv_rank = next_k, next_v, next_kv_rank
-        if step + 1 < world_size:
-            next_k, next_v, next_kv_rank, reqs = send_recv_kv(
-                process_group, local_k, local_v, step + 1, causal=False
-            )
+    for step in range(kv_comm.world_size):
+        if step + 1 != kv_comm.world_size:
+            next_k = kv_comm.send_recv(k)
+            next_v = kv_comm.send_recv(v)
+            kv_comm.commit()
 
         if step == 0:
             dq, dk, dv = backward(
-                local_dout,
-                local_q,
-                local_k,
-                local_v,
-                local_out,
+                dout,
+                q,
+                k,
+                v,
+                out,
                 softmax_lse,
                 causal=True,
             )
-            local_dq, local_dk, local_dv = dq, dk, dv
-        elif kv_rank <= rank:
-            k0, v0 = k.chunk(2, dim=1)[0], v.chunk(2, dim=1)[0]
-            dq, dk0, dv0 = backward(
-                local_dout, local_q, k0, v0, local_out, softmax_lse, causal=False
-            )
-            local_dq += dq
-            dk = torch.zeros_like(k, dtype=torch.float32)
-            dv = torch.zeros_like(v, dtype=torch.float32)
-            dk[:, :block_seq_len] = dk0
-            dv[:, :block_seq_len] = dv0
         else:
-            dq1, dk, dv = backward(
-                local_dout1, local_q1, k, v, local_out1, softmax_lse1, causal=False
-            )
-            local_dq[:, block_seq_len:] += dq1
+            d_kv_comm.wait()
+            dk, dv = next_dk, next_dv
+            if step <= kv_comm.rank:
+                k0 = k[:, :block_seq_len]
+                v0 = v[:, :block_seq_len]
+                block_dq, block_dk0, block_dv0 = backward(
+                    dout, q, k0, v0, out, softmax_lse, causal=False
+                )
+                dq += block_dq
+                dk[:, :block_seq_len] += block_dk0
+                dv[:, :block_seq_len] += block_dv0
+            else:
+                block_dq1, block_dk, block_dv = backward(
+                    dout1, q1, k, v, out1, softmax_lse1, causal=False
+                )
+                dq[:, block_seq_len:] += block_dq1
+                dk += block_dk
+                dv += block_dv
 
-        if grad_reqs is not None:
-            for req in grad_reqs:
-                req.wait()
-            local_dk += remote_dk
-            local_dv += remote_dv
+        if step + 1 != kv_comm.world_size:
+            kv_comm.wait()
+            k = next_k
+            v = next_v
 
-        remote_dk, remote_dv, _, grad_reqs = send_recv_kv(
-            process_group,
-            dk,
-            dv,
-            step,
-            causal=False,
-            is_grad=True,
-        )
+        next_dk = d_kv_comm.send_recv(dk)
+        next_dv = d_kv_comm.send_recv(dv)
+        d_kv_comm.commit()
 
-    for req in grad_reqs:
-        req.wait()
-    local_dk += remote_dk
-    local_dv += remote_dv
+    d_kv_comm.wait()
 
-    return local_dq, local_dk, local_dv
+    return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
 
 class ZigZagRingFlashAttnQKVPackedFunc(torch.autograd.Function):
