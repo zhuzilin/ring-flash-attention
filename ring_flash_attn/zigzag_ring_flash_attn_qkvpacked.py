@@ -107,12 +107,14 @@ def zigzag_ring_flash_attn_backward(
     softmax_lse1 = softmax_lse.chunk(2, dim=2)[1].contiguous()
     block_seq_len = q.shape[1] // 2
 
-    def backward(dout, q, k, v, out, softmax_lse, causal):
-        # repeatly allocating buffer may be slow...
-        dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
-        dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
-        dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
+    # repeatly allocating buffer may be slow...
+    dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
+    dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
+    dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
 
+    def backward(dout, q, k, v, out, softmax_lse, causal):
+        seqlen_q = q.shape[1]
+        seqlen_kv = k.shape[1]
         _flash_attn_backward(
             dout,
             q,
@@ -120,9 +122,9 @@ def zigzag_ring_flash_attn_backward(
             v,
             out,
             softmax_lse,
-            dq_buffer,
-            dk_buffer,
-            dv_buffer,
+            dq_buffer[:, :seqlen_q],
+            dk_buffer[:, :seqlen_kv],
+            dv_buffer[:, :seqlen_kv],
             dropout_p,
             softmax_scale,
             causal,
@@ -131,10 +133,6 @@ def zigzag_ring_flash_attn_backward(
             deterministic,
             rng_state=None,
         )
-        dq = dq_buffer.to(torch.float32)
-        dk = dk_buffer.to(torch.float32)
-        dv = dv_buffer.to(torch.float32)
-        return dq, dk, dv
 
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
@@ -143,34 +141,30 @@ def zigzag_ring_flash_attn_backward(
             kv_comm.commit()
 
         if step == 0:
-            dq, dk, dv = backward(
-                dout,
-                q,
-                k,
-                v,
-                out,
-                softmax_lse,
-                causal=True,
-            )
+            backward(dout, q, k, v, out, softmax_lse, causal=True)
+            dq = dq_buffer.to(torch.float32)
+            dk = dk_buffer.to(torch.float32)
+            dv = dv_buffer.to(torch.float32)
         else:
-            d_kv_comm.wait()
-            dk, dv = next_dk, next_dv
             if step <= kv_comm.rank:
                 k0 = k[:, :block_seq_len]
                 v0 = v[:, :block_seq_len]
-                block_dq, block_dk0, block_dv0 = backward(
-                    dout, q, k0, v0, out, softmax_lse, causal=False
-                )
-                dq += block_dq
-                dk[:, :block_seq_len] += block_dk0
-                dv[:, :block_seq_len] += block_dv0
+                backward(dout, q, k0, v0, out, softmax_lse, causal=False)
+                dq += dq_buffer
             else:
-                block_dq1, block_dk, block_dv = backward(
-                    dout1, q1, k, v, out1, softmax_lse1, causal=False
-                )
-                dq[:, block_seq_len:] += block_dq1
-                dk += block_dk
-                dv += block_dv
+                backward(dout1, q1, k, v, out1, softmax_lse1, causal=False)
+                # always use the first half in dq_buffer.
+                dq[:, block_seq_len:] += dq_buffer[:, :block_seq_len]
+
+            d_kv_comm.wait()
+            dk, dv = next_dk, next_dv
+
+            if step <= kv_comm.rank:
+                dk[:, :block_seq_len] += dk_buffer[:, :block_seq_len]
+                dv[:, :block_seq_len] += dv_buffer[:, :block_seq_len]
+            else:
+                dk += dk_buffer
+                dv += dv_buffer
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
