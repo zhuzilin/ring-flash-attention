@@ -17,15 +17,20 @@ The main idea is to use the `softmax_lse` output from the flash attention kernel
 
 The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](benchmark/benchmark_qkvpacked_func.py)):
 
-|                      | theoretic flash_attn | ring_attn | zigzag_ring | stripe_attn |
-| -------------------- | -------------------- | --------- | ----------- | ----------- |
-| fwd only (iter/sec)  | 2418.4/8 = 302.3     | 208.0     | 283.0       | 259.6       |
-|                      |                      | 68.8%     | **93.6%**   | 85.9%       |
-| fwd + bwd (iter/sec) | 705.2/8 = 88.2       | 54.3      | 75.7        | 76.9        |
-|                      |                      | 61.5%     | 85.9%       | **87.2%**   |
+|                      | GPU    | theoretic flash_attn | ring_attn | zigzag_ring | stripe_attn |
+| -------------------- | ------ | -------------------- | --------- | ----------- | ----------- |
+| fwd only (iter/sec)  | 8xH800 | 2418.4 / 8 = 302.3   | 208.0     | 283.0       | 259.6       |
+|                      |        |                      | 68.8%     | **93.6%**   | 85.9%       |
+| fwd + bwd (iter/sec) | 8xH800 | 705.2 / 8 = 88.2     | 54.3      | 75.7        | 76.9        |
+|                      |        |                      | 61.5%     | 85.9%       | **87.2%**   |
+| fwd only (iter/sec)  | 8xA100 | 1545.9 / 8 = 193.2   | 124.4     | 179.0       | 163.9       |
+|                      |        |                      | 64.3%     | **92.7%**   | 84.8%       |
+| fwd + bwd (iter/sec) | 8xA100 | 470.6 / 8 = 58.8     | 33.3      | 49.5        | 45.9        |
+|                      |        |                      | 56.6      | **84.1%**   | 78.1%       |
 
 Note that
 - when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
+- nvlink between GPUs are required for high performance.
 - the varlen versions are slow at the moment, please use the non-varlen version if possible.
 
 ### Limits
