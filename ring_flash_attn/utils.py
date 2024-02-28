@@ -48,32 +48,6 @@ def update_out_and_lse(
 
 
 @torch.jit.script
-def update_out_and_lse_varlen_half(
-    out: torch.Tensor,
-    lse: torch.Tensor,
-    block_out: torch.Tensor,
-    block_lse: torch.Tensor,
-    *,
-    cu_seqlens: torch.Tensor,
-    front: bool,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    for i in range(len(cu_seqlens) - 1):
-        start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        block_start, block_end = start // 2, end // 2
-        if front:
-            end = (start + end) // 2
-        else:
-            start = (start + end) // 2
-        out[start:end], lse[start:end] = _update_out_and_lse(
-            out[start:end],
-            lse[start:end],
-            block_out[block_start:block_end],
-            block_lse[:, block_start:block_end],
-        )
-    return out, lse
-
-
-@torch.jit.script
 def flatten_varlen_lse(lse, cu_seqlens):
     new_lse = []
     for i in range(len(cu_seqlens) - 1):

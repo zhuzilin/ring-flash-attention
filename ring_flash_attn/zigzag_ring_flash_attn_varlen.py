@@ -6,23 +6,27 @@ from flash_attn.flash_attn_interface import (
 from .utils import (
     RingComm,
     update_out_and_lse,
-    update_out_and_lse_varlen_half,
     flatten_varlen_lse,
     unflatten_varlen_lse,
 )
 
 
-@torch.jit.script
-def get_half(x, cu_seqlens, *, front: bool):
-    xs = []
+def get_half_index(cu_seqlens, *, front: bool):
+    if len(cu_seqlens) == 2:
+        if front:
+            return slice(None, cu_seqlens[-1] // 2)
+        else:
+            return slice(cu_seqlens[-1] // 2, None)
+
+    index = torch.zeros((cu_seqlens[-1],), dtype=bool)
     for i in range(len(cu_seqlens) - 1):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
         if front:
             end = (start + end) // 2
         else:
             start = (start + end) // 2
-        xs.append(x[start:end])
-    return torch.cat(xs, dim=0)
+        index[start:end] = True
+    return index
 
 
 @torch.jit.script
@@ -42,18 +46,6 @@ def get_half_lse(lse, cu_seqlens, *, front: bool):
     return new_lse
 
 
-@torch.jit.script
-def add_half(x, block_x, cu_seqlens, *, front: bool):
-    for i in range(len(cu_seqlens) - 1):
-        start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        block_start, block_end = start // 2, end // 2
-        if front:
-            end = (start + end) // 2
-        else:
-            start = (start + end) // 2
-        x[start:end] += block_x[block_start:block_end]
-
-
 def zigzag_ring_flash_attn_varlen_forward(
     process_group,
     q: torch.Tensor,
@@ -61,6 +53,8 @@ def zigzag_ring_flash_attn_varlen_forward(
     v: torch.Tensor,
     cu_seqlens,
     max_seqlen,
+    half_index0,
+    half_index1,
     softmax_scale,
     dropout_p=0,
     causal=True,
@@ -72,7 +66,7 @@ def zigzag_ring_flash_attn_varlen_forward(
     comm = RingComm(process_group)
 
     block_seq_len = q.shape[0] // 2
-    q1 = get_half(q, cu_seqlens, front=False)
+    q1 = q[half_index1]
 
     out = None
     lse = None
@@ -119,8 +113,8 @@ def zigzag_ring_flash_attn_varlen_forward(
             )
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         elif step <= comm.rank:
-            k0 = get_half(k, cu_seqlens, front=True)
-            v0 = get_half(v, cu_seqlens, front=True)
+            k0 = k[half_index0]
+            v0 = v[half_index0]
             block_out, block_lse = forward(q, k0, v0, causal=False)
             block_lse = flatten_varlen_lse(
                 block_lse,
@@ -133,13 +127,8 @@ def zigzag_ring_flash_attn_varlen_forward(
                 block_lse,
                 cu_seqlens=half_cu_seqlens,
             )
-            out, lse = update_out_and_lse_varlen_half(
-                out,
-                lse,
-                block_out,
-                block_lse,
-                cu_seqlens=cu_seqlens,
-                front=False,
+            out[half_index1], lse[half_index1] = update_out_and_lse(
+                out[half_index1], lse[half_index1], block_out, block_lse
             )
 
         if step + 1 != comm.world_size:
@@ -167,6 +156,8 @@ def zigzag_ring_flash_attn_varlen_backward(
     softmax_lse,
     cu_seqlens,
     max_seqlen,
+    half_index0,
+    half_index1,
     softmax_scale,
     dropout_p=0,
     causal=True,
@@ -182,9 +173,9 @@ def zigzag_ring_flash_attn_varlen_backward(
     next_k, next_v = None, None
     dk_comm_buffer, dv_comm_buffer = None, None
 
-    dout1 = get_half(dout, cu_seqlens, front=False)
-    q1 = get_half(q, cu_seqlens, front=False)
-    out1 = get_half(out, cu_seqlens, front=False)
+    dout1 = dout[half_index1]
+    q1 = q[half_index1]
+    out1 = out[half_index1]
     softmax_lse1 = get_half_lse(softmax_lse, cu_seqlens, front=False)
     block_seq_len = q.shape[0] // 2
 
@@ -240,21 +231,21 @@ def zigzag_ring_flash_attn_varlen_backward(
             dv = dv_buffer.to(torch.float32)
         else:
             if step <= kv_comm.rank:
-                k0 = get_half(k, cu_seqlens, front=True)
-                v0 = get_half(v, cu_seqlens, front=True)
+                k0 = k[half_index0]
+                v0 = v[half_index0]
                 backward(dout, q, k0, v0, out, softmax_lse, causal=False)
                 dq += dq_buffer
             else:
                 backward(dout1, q1, k, v, out1, softmax_lse1, causal=False)
-                add_half(dq, dq_buffer, cu_seqlens, front=False)
+                dq[half_index1] += dq_buffer[:block_seq_len]
 
             d_kv_comm.wait()
             dk_comm_buffer, dv_comm_buffer = dk, dv
             dk, dv = next_dk, next_dv
 
             if step <= kv_comm.rank:
-                add_half(dk, dk_buffer, cu_seqlens, front=True)
-                add_half(dv, dv_buffer, cu_seqlens, front=True)
+                dk[half_index0] += dk_buffer[:block_seq_len]
+                dv[half_index0] += dv_buffer[:block_seq_len]
             else:
                 dk += dk_buffer
                 dv += dv_buffer
@@ -297,6 +288,8 @@ class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
         assert alibi_slopes is None
         k = k.contiguous()
         v = v.contiguous()
+        half_index0 = get_half_index(cu_seqlens, front=True)
+        half_index1 = get_half_index(cu_seqlens, front=False)
         out, softmax_lse = zigzag_ring_flash_attn_varlen_forward(
             group,
             q,
@@ -304,6 +297,8 @@ class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
             v,
             cu_seqlens,
             max_seqlen,
+            half_index0,
+            half_index1,
             softmax_scale=softmax_scale,
             dropout_p=dropout_p,
             causal=causal,
@@ -312,7 +307,18 @@ class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
             deterministic=False,
         )
         # this should be out_padded
-        ctx.save_for_backward(q, k, v, out, softmax_lse, cu_seqlens)
+        is_half_index_tensor = isinstance(half_index0, torch.Tensor)
+        ctx.is_half_index_tensor = is_half_index_tensor
+        if is_half_index_tensor:
+            ctx.save_for_backward(
+                q, k, v, out, softmax_lse, cu_seqlens, half_index0, half_index1
+            )
+        else:
+            ctx.save_for_backward(
+                q, k, v, out, softmax_lse, cu_seqlens
+            )
+            ctx.half_index0 = half_index0
+            ctx.half_index1 = half_index1
         ctx.max_seqlen = max_seqlen
         ctx.dropout_p = dropout_p
         ctx.softmax_scale = softmax_scale
@@ -325,7 +331,14 @@ class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout, *args):
-        q, k, v, out, softmax_lse, cu_seqlens = ctx.saved_tensors
+        if ctx.is_half_index_tensor:
+            (
+                q, k, v, out, softmax_lse, cu_seqlens, half_index0, half_index1
+            ) = ctx.saved_tensors
+        else:
+            q, k, v, out, softmax_lse, cu_seqlens = ctx.saved_tensors
+            half_index0 = ctx.half_index0
+            half_index1 = ctx.half_index1
         dq, dk, dv = zigzag_ring_flash_attn_varlen_backward(
             ctx.group,
             dout,
@@ -336,6 +349,8 @@ class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
             softmax_lse,
             cu_seqlens,
             ctx.max_seqlen,
+            half_index0,
+            half_index1,
             softmax_scale=ctx.softmax_scale,
             dropout_p=ctx.dropout_p,
             causal=ctx.causal,
