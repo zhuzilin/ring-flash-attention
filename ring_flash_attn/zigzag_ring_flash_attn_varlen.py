@@ -273,11 +273,13 @@ def zigzag_ring_flash_attn_varlen_backward(
     return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
 
-class ZigZagRingFlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
+class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        qkv,
+        q,
+        k,
+        v,
         cu_seqlens,
         max_seqlen,
         dropout_p,
@@ -290,12 +292,11 @@ class ZigZagRingFlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
         group,
     ):
         if softmax_scale is None:
-            softmax_scale = qkv.shape[-1] ** (-0.5)
+            softmax_scale = q.shape[-1] ** (-0.5)
 
         assert alibi_slopes is None
-        q = qkv[:, 0]
-        k = qkv[:, 1].contiguous()
-        v = qkv[:, 2].contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
         out, softmax_lse = zigzag_ring_flash_attn_varlen_forward(
             group,
             q,
@@ -342,9 +343,7 @@ class ZigZagRingFlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
             alibi_slopes=ctx.alibi_slopes,
             deterministic=ctx.deterministic,
         )
-        dqkv = torch.stack([dq, dk, dv], dim=1)
-        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
-        return dqkv, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None
 
 
 def zigzag_ring_flash_attn_varlen_qkvpacked_func(
@@ -360,8 +359,73 @@ def zigzag_ring_flash_attn_varlen_qkvpacked_func(
     return_attn_probs=False,
     group=None,
 ):
-    return ZigZagRingFlashAttnVarlenQKVPackedFunc.apply(
-        qkv,
+    return ZigZagRingFlashAttnVarlenFunc.apply(
+        qkv[:, 0],
+        qkv[:, 1],
+        qkv[:, 2],
+        cu_seqlens,
+        max_seqlen,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        alibi_slopes,
+        deterministic,
+        return_attn_probs,
+        group,
+    )
+
+
+def zigzag_ring_flash_attn_varlen_kvpacked_func(
+    q,
+    kv,
+    cu_seqlens,
+    max_seqlen,
+    dropout_p=0.0,
+    softmax_scale=None,
+    causal=False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    alibi_slopes=None,
+    deterministic=False,
+    return_attn_probs=False,
+    group=None,
+):
+    return ZigZagRingFlashAttnVarlenFunc.apply(
+        q,
+        kv[:, 0],
+        kv[:, 1],
+        cu_seqlens,
+        max_seqlen,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        alibi_slopes,
+        deterministic,
+        return_attn_probs,
+        group,
+    )
+
+
+def zigzag_ring_flash_attn_varlen_func(
+    q,
+    k,
+    v,
+    cu_seqlens,
+    max_seqlen,
+    dropout_p=0.0,
+    softmax_scale=None,
+    causal=False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    alibi_slopes=None,
+    deterministic=False,
+    return_attn_probs=False,
+    group=None,
+):
+    return ZigZagRingFlashAttnVarlenFunc.apply(
+        q,
+        k,
+        v,
         cu_seqlens,
         max_seqlen,
         dropout_p,

@@ -2,10 +2,16 @@
 
 This repo implements the [RingAttention](https://github.com/lhao499/RingAttention) with [FlashAttention](https://github.com/Dao-AILab/flash-attention). Currently, this repo implements:
 
-- `ring_flash_attn_qkvpacked_func`: ring attention version of `flash_attn_qkvpacked_func`
-- `ring_flash_attn_varlen_qkvpacked_func`: ring attention version of `flash_attn_varlen_qkvpacked_func`
-- `zigzag_ring_flash_attn_qkvpacked_func`: an optimized version of `ring_flash_attn_varlen_qkvpacked_func`, see [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
-- `stripe_flash_attn_qkvpacked_func`: stripe attention version of `ring_flash_attn_varlen_qkvpacked_func`, the block size is set to 1 to use flash attn api.
+- `ring_flash_attn_func`: ring attention version of `flash_attn_func`
+- `ring_flash_attn_varlen_func`: ring attention version of `flash_attn_varlen_func`
+- `zigzag_ring_flash_attn_func`: an optimized version of `ring_flash_attn_func`, see [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
+- `zigzag_ring_flash_attn_varlen_func`: an optimized version of `ring_flash_attn_varlen_func`
+- `stripe_flash_attn_func`: stripe attention version of `ring_flash_attn_varlen_func`, the block size is set to 1 to use flash_attn api.
+
+Note that
+
+- all function has the `*_func`, `*_kvpacked_func`, `*_qkvpacked_func` variant implemented.
+- the varlen versions only support passing one `cu_seqlens`.
 
 The main idea is to use the `softmax_lse` output from the flash attention kernels.
 
@@ -20,7 +26,7 @@ The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](be
 
 Note that
 - when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
-- the varlen version is slow at the moment, please use the non-varlen version if possible.
+- the varlen versions are slow at the moment, please use the non-varlen version if possible.
 
 ### Limits
 
@@ -34,15 +40,18 @@ And also because we need to save extra fp32 buffer during computation, the memor
 - [x] Implement `zigzag_ring_flash_attn_qkvpacked_func` [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
 - [x] Implement `stripe_flash_attn_qkvpacked_func`
 - [x] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
+- [x] Implement `*_kvpacked_func` and `*_func` variant for all APIs
+- [ ] Optimize `*_varlen_func`
 - [ ] Try to upstream to flash attention.
 
 ### Test
 
 ```bash
-torchrun --nproc_per_node 8 test/test_qkvpacked_func.py
-torchrun --nproc_per_node 8 test/test_varlen_qkvpacked_func.py
-torchrun --nproc_per_node 8 test/test_zigzag_qkvpacked_func.py
-torchrun --nproc_per_node 8 test/test_stripe_qkvpacked_func.py
+torchrun --nproc_per_node 8 test/test_ring_flash_attn_func.py
+torchrun --nproc_per_node 8 test/test_ring_flash_attn_varlen_func.py
+torchrun --nproc_per_node 8 test/test_zigzag_ring_flash_attn_func.py
+torchrun --nproc_per_node 8 test/test_zigzag_ring_flash_attn_varlen_func.py
+torchrun --nproc_per_node 8 test/test_stripe_flash_attn_func.py
 ```
 
 ### Benchmark

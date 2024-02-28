@@ -184,11 +184,13 @@ def stripe_flash_attn_backward(
     return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
 
-class StripeFlashAttnQKVPackedFunc(torch.autograd.Function):
+class StripeFlashAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        qkv,
+        q,
+        k,
+        v,
         dropout_p,
         softmax_scale,
         causal,
@@ -199,12 +201,11 @@ class StripeFlashAttnQKVPackedFunc(torch.autograd.Function):
         group,
     ):
         if softmax_scale is None:
-            softmax_scale = qkv.shape[-1] ** (-0.5)
+            softmax_scale = q.shape[-1] ** (-0.5)
 
         assert alibi_slopes is None
-        q = qkv[:, :, 0]
-        k = qkv[:, :, 1].contiguous()
-        v = qkv[:, :, 2].contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
         out, softmax_lse = stripe_flash_attn_forward(
             group,
             q,
@@ -246,9 +247,7 @@ class StripeFlashAttnQKVPackedFunc(torch.autograd.Function):
             alibi_slopes=ctx.alibi_slopes,
             deterministic=ctx.deterministic,
         )
-        dqkv = torch.stack([dq, dk, dv], dim=2)
-        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
-        return dqkv, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
 def stripe_flash_attn_qkvpacked_func(
@@ -262,8 +261,65 @@ def stripe_flash_attn_qkvpacked_func(
     return_attn_probs=False,
     group=None,
 ):
-    return StripeFlashAttnQKVPackedFunc.apply(
-        qkv,
+    return StripeFlashAttnFunc.apply(
+        qkv[:, :, 0],
+        qkv[:, :, 1],
+        qkv[:, :, 2],
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        alibi_slopes,
+        deterministic,
+        return_attn_probs,
+        group,
+    )
+
+
+def stripe_flash_attn_kvpacked_func(
+    q,
+    kv,
+    dropout_p=0.0,
+    softmax_scale=None,
+    causal=False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    alibi_slopes=None,
+    deterministic=False,
+    return_attn_probs=False,
+    group=None,
+):
+    return StripeFlashAttnFunc.apply(
+        q,
+        kv[:, :, 0],
+        kv[:, :, 1],
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        alibi_slopes,
+        deterministic,
+        return_attn_probs,
+        group,
+    )
+
+
+def stripe_flash_attn_func(
+    q,
+    k,
+    v,
+    dropout_p=0.0,
+    softmax_scale=None,
+    causal=False,
+    window_size=(-1, -1),  # -1 means infinite context window
+    alibi_slopes=None,
+    deterministic=False,
+    return_attn_probs=False,
+    group=None,
+):
+    return StripeFlashAttnFunc.apply(
+        q,
+        k,
+        v,
         dropout_p,
         softmax_scale,
         causal,
