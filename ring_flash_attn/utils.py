@@ -88,6 +88,10 @@ class RingComm:
         send_rank = (self.rank + 1) % self.world_size
         recv_rank = (self.rank - 1) % self.world_size
 
+        if self._process_group is not None:
+            send_rank = dist.get_global_rank(self._process_group, send_rank)
+            recv_rank = dist.get_global_rank(self._process_group, recv_rank)
+
         send_op = dist.P2POp(dist.isend, to_send, send_rank, group=self._process_group)
         recv_op = dist.P2POp(dist.irecv, res, recv_rank, group=self._process_group)
         self._ops.append(send_op)
