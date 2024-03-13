@@ -26,7 +26,7 @@ The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](be
 | fwd only (iter/sec)  | 8xA100 | 1545.9 / 8 = 193.2   | 124.4     | 179.0       | 163.9       |
 |                      |        |                      | 64.3%     | **92.7%**   | 84.8%       |
 | fwd + bwd (iter/sec) | 8xA100 | 470.6 / 8 = 58.8     | 33.3      | 49.5        | 45.9        |
-|                      |        |                      | 56.6      | **84.1%**   | 78.1%       |
+|                      |        |                      | 56.6%     | **84.1%**   | 78.1%       |
 
 Note that
 - when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
