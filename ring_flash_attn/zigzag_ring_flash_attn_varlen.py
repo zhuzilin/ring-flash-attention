@@ -6,9 +6,18 @@ from flash_attn.flash_attn_interface import (
 from .utils import (
     RingComm,
     update_out_and_lse,
-    flatten_varlen_lse,
-    unflatten_varlen_lse,
 )
+
+try:
+    from .triton_utils import (
+        flatten_varlen_lse,
+        unflatten_varlen_lse,
+    )
+except:
+    from .utils import (
+        flatten_varlen_lse,
+        unflatten_varlen_lse,
+    )
 
 
 def get_half_index(cu_seqlens, *, front: bool):
@@ -137,12 +146,7 @@ def zigzag_ring_flash_attn_varlen_forward(
             v = next_v
 
     out = out.to(q.dtype)
-    lse = (
-        unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
-        .squeeze(dim=-1)
-        .transpose(1, 2)
-        .contiguous()
-    )
+    lse = unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
     return out, lse
 
 
@@ -314,9 +318,7 @@ class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
                 q, k, v, out, softmax_lse, cu_seqlens, half_index0, half_index1
             )
         else:
-            ctx.save_for_backward(
-                q, k, v, out, softmax_lse, cu_seqlens
-            )
+            ctx.save_for_backward(q, k, v, out, softmax_lse, cu_seqlens)
             ctx.half_index0 = half_index0
             ctx.half_index1 = half_index1
         ctx.max_seqlen = max_seqlen
@@ -332,9 +334,9 @@ class ZigZagRingFlashAttnVarlenFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         if ctx.is_half_index_tensor:
-            (
-                q, k, v, out, softmax_lse, cu_seqlens, half_index0, half_index1
-            ) = ctx.saved_tensors
+            (q, k, v, out, softmax_lse, cu_seqlens, half_index0, half_index1) = (
+                ctx.saved_tensors
+            )
         else:
             q, k, v, out, softmax_lse, cu_seqlens = ctx.saved_tensors
             half_index0 = ctx.half_index0

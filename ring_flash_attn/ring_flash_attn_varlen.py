@@ -7,9 +7,18 @@ from flash_attn.flash_attn_interface import (
 from .utils import (
     RingComm,
     update_out_and_lse,
-    flatten_varlen_lse,
-    unflatten_varlen_lse,
 )
+
+try:
+    from .triton_utils import (
+        flatten_varlen_lse,
+        unflatten_varlen_lse,
+    )
+except:
+    from .utils import (
+        flatten_varlen_lse,
+        unflatten_varlen_lse,
+    )
 
 
 def ring_flash_attn_varlen_forward(
@@ -65,12 +74,7 @@ def ring_flash_attn_varlen_forward(
             v = next_v
 
     out = out.to(q.dtype)
-    lse = (
-        unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
-        .squeeze(dim=-1)
-        .transpose(1, 2)
-        .contiguous()
-    )
+    lse = unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
     return out, lse
 
 

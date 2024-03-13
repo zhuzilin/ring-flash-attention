@@ -66,7 +66,7 @@ def unflatten_varlen_lse(lse, cu_seqlens, max_seqlen: int):
     for i in range(num_seq):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
         new_lse[i, : end - start] = lse[start:end]
-    return new_lse
+    return new_lse.squeeze(dim=-1).transpose(1, 2).contiguous()
 
 
 class RingComm:
@@ -77,6 +77,13 @@ class RingComm:
         self.world_size = dist.get_world_size(self._process_group)
         self._reqs = None
 
+        self.send_rank = (self.rank + 1) % self.world_size
+        self.recv_rank = (self.rank - 1) % self.world_size
+
+        if process_group is not None:
+            self.send_rank = dist.get_global_rank(self._process_group, self.send_rank)
+            self.recv_rank = dist.get_global_rank(self._process_group, self.recv_rank)
+
     def send_recv(
         self, to_send: torch.Tensor, recv_tensor: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
@@ -85,15 +92,10 @@ class RingComm:
         else:
             res = recv_tensor
 
-        send_rank = (self.rank + 1) % self.world_size
-        recv_rank = (self.rank - 1) % self.world_size
-
-        if self._process_group is not None:
-            send_rank = dist.get_global_rank(self._process_group, send_rank)
-            recv_rank = dist.get_global_rank(self._process_group, recv_rank)
-
-        send_op = dist.P2POp(dist.isend, to_send, send_rank, group=self._process_group)
-        recv_op = dist.P2POp(dist.irecv, res, recv_rank, group=self._process_group)
+        send_op = dist.P2POp(
+            dist.isend, to_send, self.send_rank, group=self._process_group
+        )
+        recv_op = dist.P2POp(dist.irecv, res, self.recv_rank, group=self._process_group)
         self._ops.append(send_op)
         self._ops.append(recv_op)
         return res
