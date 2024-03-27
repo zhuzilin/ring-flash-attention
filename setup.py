@@ -6,4 +6,7 @@ setup(
     author="zhuzilin",
     url="https://github.com/zhuzilin/ring-flash-attention",
     packages=find_packages(),
+        install_requires=[
+        'flash-attn==2.4.1',
+    ],
 )
