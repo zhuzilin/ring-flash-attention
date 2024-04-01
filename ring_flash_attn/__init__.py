@@ -23,3 +23,8 @@ from .stripe_flash_attn import (
     stripe_flash_attn_kvpacked_func,
     stripe_flash_attn_qkvpacked_func,
 )
+from .stripe_flash_attn_varlen import (
+    stripe_flash_attn_varlen_func,
+    stripe_flash_attn_varlen_kvpacked_func,
+    stripe_flash_attn_varlen_qkvpacked_func,
+)

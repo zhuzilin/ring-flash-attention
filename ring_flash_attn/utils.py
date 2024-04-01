@@ -47,6 +47,31 @@ def update_out_and_lse(
     return out, lse
 
 
+def update_out_and_lse_masked(
+    out: torch.Tensor,
+    lse: torch.Tensor,
+    block_out: torch.Tensor,
+    block_lse: torch.Tensor,
+    mask: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    assert out is not None and lse is not None
+
+    block_out = block_out.to(torch.float32)
+    block_lse = block_lse.transpose(-2, -1).unsqueeze(dim=-1)
+
+    x = torch.exp(block_lse - lse)
+    x.masked_fill_(mask.unsqueeze(-1).unsqueeze(-1), 0)
+    x = torch.log(1 + x)
+    new_lse = lse + x #torch.log(1 + torch.exp(block_lse - lse))
+
+    x = torch.exp(block_lse - new_lse) * block_out
+    x.masked_fill_(mask.unsqueeze(-1).unsqueeze(-1), 0)
+    out = torch.exp(lse - new_lse) * out + x #torch.exp(block_lse - new_lse) * block_out
+
+    lse = new_lse
+    return out, lse
+
+
 @torch.jit.script
 def flatten_varlen_lse(lse, cu_seqlens):
     new_lse = []
