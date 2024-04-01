@@ -27,9 +27,6 @@ def log(msg, a, rank0_only=False):
                 f"mean {a.abs().mean().item()}",
                 flush=True,
             )
-            if rank == 0:
-                print((a.abs()>0.01).sum(dim=-1).sum(dim=-1), a.shape)
-                #print(torch.nonzero((a.abs()>0.1).sum(dim=-1)), a.shape)
         dist.barrier()
 
 
@@ -128,7 +125,6 @@ if __name__ == "__main__":
 
     log("out", out, rank0_only=True)
     log("out diff", local_out - ring_out)
-
     print()
     for lse, ring_lse in zip(lse_list, ring_lse_list):
         local_lse = lse[:, rank::world_size]

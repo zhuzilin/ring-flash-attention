@@ -4,7 +4,7 @@ from flash_attn.flash_attn_interface import (
     _flash_attn_varlen_forward,
     _flash_attn_varlen_backward,
 )
-from .utils import RingComm, update_out_and_lse, update_out_and_lse_masked
+from .utils import RingComm, flatten_varlen_lse_shift, update_out_and_lse, update_out_and_lse_masked
 
 try:
     from .triton_utils import (
@@ -46,12 +46,10 @@ def stripe_flash_attn_varlen_forward(
                 q,
                 k,
                 v,
-
                 cu_seqlens,
                 cu_seqlens,
                 max_seqlen,
                 max_seqlen,
-
                 dropout_p,
                 softmax_scale,
                 causal=True,
@@ -65,26 +63,20 @@ def stripe_flash_attn_varlen_forward(
             )
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:
-
-            seq_len = q.shape[0]
-            cu_seqlens_q = cu_seqlens.clone() + 1
-            cu_seqlens_q[-1] = seq_len
+            seqlen = q.shape[0]
+            cu_seqlens_q = cu_seqlens + 1
+            cu_seqlens_q[-1] = seqlen
             cu_seqlens_k = cu_seqlens.clone()
-            cu_seqlens_k[-1] = seq_len-1
+            cu_seqlens_k[-1] = seqlen - 1
 
-            max_seqlen_q = max_seqlen
-            max_seqlen_k = max_seqlen_q 
-            
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(
                 q,
                 k, 
                 v,
-
                 cu_seqlens_q,
                 cu_seqlens_k,
-                max_seqlen_q,
-                max_seqlen_k,
-
+                max_seqlen-1,
+                max_seqlen-1,
                 dropout_p,
                 softmax_scale,
                 causal=True,
@@ -92,24 +84,16 @@ def stripe_flash_attn_varlen_forward(
                 alibi_slopes=None,
                 return_softmax=True and dropout_p > 0,
             )
-            print("cu_seqlens_q", cu_seqlens_q)
-            print("cu_seqlens_k", cu_seqlens_k)
-            #print("block_lse", block_lse[0, 0], block_lse.shape)
-            block_lse[:,:,1:] = block_lse[:,:,:-1]
-            print("block_lse", block_lse.shape)
-            block_lse = flatten_varlen_lse(
+
+            block_lse = flatten_varlen_lse_shift(
                 block_lse,
                 cu_seqlens=cu_seqlens,
+                total_seqlen=q.shape[0],
+                shift=1
             )
-            
-            # print("block_lse", block_lse.shape)
-            # print("cu_seqlens", cu_seqlens)
-            # print("0", block_lse[:, cu_seqlens[:-1]])
-            # print("+1", block_lse[:, cu_seqlens[:-1]+1])
-            #print("block_lse2", block_lse[0], block_lse.shape)
 
             # first outputs of sequences need to be ignored            
-            mask = torch.zeros(seq_len, dtype=torch.bool, device=q.device)
+            mask = torch.zeros(seqlen, dtype=torch.bool, device=q.device)
             mask[cu_seqlens[:-1]] = True
 
             out, lse = update_out_and_lse_masked(out, lse, block_out, block_lse, mask)

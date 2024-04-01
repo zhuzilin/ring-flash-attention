@@ -61,12 +61,11 @@ def update_out_and_lse_masked(
 
     x = torch.exp(block_lse - lse)
     x.masked_fill_(mask.unsqueeze(-1).unsqueeze(-1), 0)
-    x = torch.log(1 + x)
-    new_lse = lse + x #torch.log(1 + torch.exp(block_lse - lse))
+    new_lse = lse + torch.log(1 + x)
 
     x = torch.exp(block_lse - new_lse) * block_out
     x.masked_fill_(mask.unsqueeze(-1).unsqueeze(-1), 0)
-    out = torch.exp(lse - new_lse) * out + x #torch.exp(block_lse - new_lse) * block_out
+    out = torch.exp(lse - new_lse) * out + x
 
     lse = new_lse
     return out, lse
@@ -79,6 +78,18 @@ def flatten_varlen_lse(lse, cu_seqlens):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
         new_lse.append(lse[i, :, : end - start])
     return torch.cat(new_lse, dim=1)
+
+
+@torch.jit.script
+def flatten_varlen_lse_shift(lse: torch.Tensor, cu_seqlens: torch.Tensor, total_seqlen: int, shift: int=1):
+    output = torch.zeros(lse.shape[1], total_seqlen, device=lse.device, dtype=lse.dtype)
+    offset = shift
+    for i in range(len(cu_seqlens) - 1):
+        start, end = cu_seqlens[i] + shift, cu_seqlens[i + 1]
+        l = end - start
+        output[:, offset:offset+l] = lse[i, :, :l]
+        offset += l + shift
+    return output
 
 
 @torch.jit.script
