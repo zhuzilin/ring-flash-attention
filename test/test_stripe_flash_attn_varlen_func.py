@@ -131,24 +131,24 @@ if __name__ == "__main__":
         log("lse", lse, rank0_only=True)
         log("lse diff", local_lse - ring_lse)
 
-    # dist.barrier()
-    # if rank == 0:
-    #     print("#" * 30)
-    #     print("# backward:")
-    #     print("#" * 30)
+    dist.barrier()
+    if rank == 0:
+        print("#" * 30)
+        print("# backward:")
+        print("#" * 30)
 
-    # out.backward(dout)
-    # dqkv = qkv.grad
-    # local_dqkv = extract_local(dqkv, cu_seqlens, rank, world_size)
+    out.backward(dout)
+    dqkv = qkv.grad
+    local_dqkv = extract_local(dqkv, cu_seqlens, rank, world_size)
 
-    # ring_out.backward(local_dout)
-    # ring_dqkv = local_qkv.grad
+    ring_out.backward(local_dout)
+    ring_dqkv = local_qkv.grad
 
-    # log("load_dq", local_dqkv[:, 0])
-    # log("dq diff", local_dqkv[:, 0] - ring_dqkv[:, 0])
+    log("load_dq", local_dqkv[:, 0])
+    log("dq diff", local_dqkv[:, 0] - ring_dqkv[:, 0])
 
-    # log("load_dk", local_dqkv[:, 1])
-    # log("dk diff", local_dqkv[:, 1] - ring_dqkv[:, 1])
+    log("load_dk", local_dqkv[:, 1])
+    log("dk diff", local_dqkv[:, 1] - ring_dqkv[:, 1])
 
-    # log("load_dv", local_dqkv[:, 2])
-    # log("dv diff", local_dqkv[:, 2] - ring_dqkv[:, 2])
+    log("load_dv", local_dqkv[:, 2])
+    log("dv diff", local_dqkv[:, 2] - ring_dqkv[:, 2])

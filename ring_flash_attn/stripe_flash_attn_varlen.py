@@ -108,7 +108,7 @@ def stripe_flash_attn_varlen_forward(
     return out, lse
 
 
-def stripe_flash_attn_backward(
+def stripe_flash_attn_varlen_backward(
     process_group,
     dout,
     q,
@@ -116,16 +116,11 @@ def stripe_flash_attn_backward(
     v,
     out,
     softmax_lse,
+    cu_seqlens,
+    max_seqlen,
     softmax_scale,
     dropout_p=0,
-    causal=True,
-    window_size=(-1, -1),
-    alibi_slopes=None,
-    deterministic=False,
 ):
-    assert (
-        causal
-    ), "stripe flash attn only supports causal attention, if not causal, ring flash attn instead"
     kv_comm = RingComm(process_group)
     d_kv_comm = RingComm(process_group)
     dq, dk, dv = None, None, None
@@ -133,9 +128,9 @@ def stripe_flash_attn_backward(
     next_k, next_v = None, None
     dk_comm_buffer, dv_comm_buffer = None, None
 
-    block_dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
-    block_dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
-    block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
+    block_dq_buffer = torch.zeros(q.shape, dtype=q.dtype, device=q.device)
+    block_dk_buffer = torch.zeros(k.shape, dtype=k.dtype, device=k.device)
+    block_dv_buffer = torch.zeros(v.shape, dtype=v.dtype, device=v.device)
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
             next_k = kv_comm.send_recv(k)
@@ -145,7 +140,7 @@ def stripe_flash_attn_backward(
         shift_causal = step > kv_comm.rank
         softmax_lse_1 = None
         if not shift_causal:
-            _flash_attn_backward(
+            _flash_attn_varlen_backward(
                 dout,
                 q,
                 k,
@@ -155,34 +150,55 @@ def stripe_flash_attn_backward(
                 block_dq_buffer,
                 block_dk_buffer,
                 block_dv_buffer,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
                 dropout_p,
                 softmax_scale,
-                causal,
-                window_size,
-                alibi_slopes,
-                deterministic,
+                causal=True,
+                window_size=(-1, -1),
+                alibi_slopes=None,
+                deterministic=False,
                 rng_state=None,
             )
         else:
             if softmax_lse_1 is None:
                 # lazy init, since the last rank does not need softmax_lse_1
                 softmax_lse_1 = softmax_lse[:, :, 1:].contiguous()
-            _flash_attn_backward(
-                dout[:, 1:],
-                q[:, 1:],
-                k[:, :-1],
-                v[:, :-1],
-                out[:, 1:],
+
+            seqlen = q.shape[0]
+            cu_seqlens_q = cu_seqlens + 1
+            cu_seqlens_q[-1] = seqlen
+            cu_seqlens_k = cu_seqlens.clone()
+            cu_seqlens_k[-1] = seqlen - 1
+
+            dout_ = dout.clone()
+            dout_[cu_seqlens[:-1]] = 0
+
+            out_ = out.clone()
+            out_[cu_seqlens[:-1]] = 0
+
+            _flash_attn_varlen_backward(
+                dout_,
+                q,
+                k,
+                v,
+                out_,
                 softmax_lse_1,
-                block_dq_buffer[:, 1:],
-                block_dk_buffer[:, :-1],
-                block_dv_buffer[:, :-1],
+                block_dq_buffer,
+                block_dk_buffer,
+                block_dv_buffer,
+                cu_seqlens_q,
+                cu_seqlens_k,
+                max_seqlen-1,
+                max_seqlen-1,
                 dropout_p,
                 softmax_scale,
-                causal,
-                window_size,
-                alibi_slopes,
-                deterministic,
+                causal=True,
+                window_size=(-1, -1),
+                alibi_slopes=None,
+                deterministic=False,
                 rng_state=None,
             )
 
@@ -191,21 +207,15 @@ def stripe_flash_attn_backward(
             dk = block_dk_buffer.to(torch.float32)
             dv = block_dv_buffer.to(torch.float32)
         else:
-            if not shift_causal:
-                dq += block_dq_buffer
-            else:
-                dq[:, 1:] += block_dq_buffer[:, 1:]
+            dq += block_dq_buffer
+
             d_kv_comm.wait()
             dk_comm_buffer, dv_comm_buffer = dk, dv
             dk = next_dk
             dv = next_dv
 
-            if not shift_causal:
-                dk = block_dk_buffer + dk
-                dv = block_dv_buffer + dv
-            else:
-                dk[:, :-1] += block_dk_buffer[:, :-1]
-                dv[:, :-1] += block_dv_buffer[:, :-1]
+            dk = block_dk_buffer + dk
+            dv = block_dv_buffer + dv
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
@@ -260,7 +270,8 @@ class StripeFlashAttnVarlenFunc(torch.autograd.Function):
             dropout_p=dropout_p,
         )
         # this should be out_padded
-        ctx.save_for_backward(q, k, v, out, softmax_lse)
+        ctx.save_for_backward(q, k, v, out, softmax_lse, cu_seqlens)
+        ctx.max_seqlen = max_seqlen
         ctx.dropout_p = dropout_p
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
@@ -272,8 +283,8 @@ class StripeFlashAttnVarlenFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout, *args):
-        q, k, v, out, softmax_lse = ctx.saved_tensors
-        dq, dk, dv = stripe_flash_attn_backward(
+        q, k, v, out, softmax_lse, cu_seqlens = ctx.saved_tensors
+        dq, dk, dv = stripe_flash_attn_varlen_backward(
             ctx.group,
             dout,
             q,
@@ -281,14 +292,12 @@ class StripeFlashAttnVarlenFunc(torch.autograd.Function):
             v,
             out,
             softmax_lse,
+            cu_seqlens,
+            ctx.max_seqlen,
             softmax_scale=ctx.softmax_scale,
             dropout_p=ctx.dropout_p,
-            causal=ctx.causal,
-            window_size=ctx.window_size,
-            alibi_slopes=ctx.alibi_slopes,
-            deterministic=ctx.deterministic,
         )
-        return dq, dk, dv, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None
 
 
 def stripe_flash_attn_varlen_qkvpacked_func(
