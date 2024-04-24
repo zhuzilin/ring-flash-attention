@@ -3,6 +3,16 @@ import torch
 import torch.distributed as dist
 from ring_flash_attn import zigzag_ring_flash_attn_qkvpacked_func
 
+import random
+
+
+def set_seed(rank, seed=42):
+    seed = rank + seed
+    random.seed(seed)             
+    torch.manual_seed(seed)      
+    torch.cuda.manual_seed(seed)  
+    torch.cuda.manual_seed_all(seed) 
+
 
 def log(msg, a, rank0_only=False):
     world_size = dist.get_world_size()
@@ -41,6 +51,7 @@ def extract_local(value, rank, world_size, dim=1):
 if __name__ == "__main__":
     dist.init_process_group("nccl")
     rank = dist.get_rank()
+    set_seed(rank)
     world_size = dist.get_world_size()
     dtype = torch.bfloat16
     device = torch.device(f"cuda:{rank}")
@@ -117,11 +128,11 @@ if __name__ == "__main__":
     ring_out.backward(local_dout)
     ring_dqkv = local_qkv.grad
 
-    log("load_dq", local_dqkv[:, :, 0, :])
+    log("local_dq", local_dqkv[:, :, 0, :])
     log("dq diff", local_dqkv[:, :, 0, :] - ring_dqkv[:, :, 0, :])
 
-    log("load_dk", local_dqkv[:, :, 1, :])
+    log("local_dk", local_dqkv[:, :, 1, :])
     log("dk0 diff", local_dqkv[:, :, 1, :] - ring_dqkv[:, :, 1, :])
 
-    log("load_dv", local_dqkv[:, :, 2, :])
+    log("local_dv", local_dqkv[:, :, 2, :])
     log("dv diff", local_dqkv[:, :, 2, :] - ring_dqkv[:, :, 2, :])
