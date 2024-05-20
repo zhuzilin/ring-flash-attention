@@ -65,3 +65,8 @@ torchrun --nproc_per_node 8 test/test_stripe_flash_attn_func.py
 torchrun --nproc_per_node 8 benchmark/benchmark_qkvpacked_func.py
 torchrun --nproc_per_node 8 benchmark/benchmark_varlen_qkvpacked_func.py
 ```
+
+### Known Limits
+
+- dropout is not supported at the moment, because it's hard to save all the rng_states.
+- window_size is not supported, because it will be really tricky to implement a varlen version with window_size.
