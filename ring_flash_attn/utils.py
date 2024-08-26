@@ -3,8 +3,23 @@ from typing import Optional, Tuple
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+import inspect
+from functools import cache
 
-__all__ = ["update_out_and_lse", "RingComm"]
+
+__all__ = ["update_out_and_lse", "RingComm", "get_default_args"]
+
+
+@cache
+def get_default_args(func):
+    spec = inspect.getfullargspec(func)
+    defaults = spec.defaults if spec.defaults is not None else ()
+    padded_defaults = (None,) * (len(spec.args) - len(defaults)) + defaults
+    args = dict(zip(spec.args, padded_defaults))
+    if "softcap" in args:
+        args["softcap"] = 0.0
+    return args
+
 
 @torch.jit.script
 def _update_out_and_lse(
@@ -13,7 +28,7 @@ def _update_out_and_lse(
     block_out: torch.Tensor,
     block_lse: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    
+
     block_out = block_out.to(torch.float32)
     block_lse = block_lse.transpose(-2, -1).unsqueeze(dim=-1)
 

@@ -7,6 +7,7 @@ from flash_attn.flash_attn_interface import (
 from .utils import (
     RingComm,
     update_out_and_lse,
+    get_default_args,
 )
 
 try:
@@ -47,20 +48,27 @@ def ring_flash_attn_varlen_forward(
             next_v: torch.Tensor = comm.send_recv(v)
             comm.commit()
         if not causal or step <= comm.rank:
+            params = get_default_args(_flash_attn_varlen_forward).copy()
+            params.update(
+                {
+                    "q": q,
+                    "k": k,
+                    "v": v,
+                    "cu_seqlens_q": cu_seqlens,
+                    "cu_seqlens_k": cu_seqlens,
+                    "max_seqlen_q": max_seqlen,
+                    "max_seqlen_k": max_seqlen,
+                    "dropout_p": dropout_p,
+                    "softmax_scale": softmax_scale,
+                    "causal": causal and step == 0,
+                    "window_size": window_size,
+                    "alibi_slopes": alibi_slopes,
+                    "return_softmax": True and dropout_p > 0,
+                }
+            )
+
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(
-                q,
-                k,
-                v,
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                dropout_p,
-                softmax_scale,
-                causal=causal and step == 0,
-                window_size=window_size,
-                alibi_slopes=alibi_slopes,
-                return_softmax=True and dropout_p > 0,
+                **params
             )
             block_lse = flatten_varlen_lse(
                 block_lse,
@@ -113,28 +121,31 @@ def ring_flash_attn_varlen_backward(
             kv_comm.commit()
         if step <= kv_comm.rank or not causal:
             bwd_causal = causal and step == 0
-            _flash_attn_varlen_backward(
-                dout,
-                q,
-                k,
-                v,
-                out,
-                softmax_lse,
-                block_dq_buffer,
-                block_dk_buffer,
-                block_dv_buffer,
-                cu_seqlens,
-                cu_seqlens,
-                max_seqlen,
-                max_seqlen,
-                dropout_p,
-                softmax_scale,
-                bwd_causal,
-                window_size,
-                alibi_slopes,
-                deterministic,
-                rng_state=None,
+            params = get_default_args(_flash_attn_varlen_backward).copy()
+            params.update(
+                {
+                    "dout": dout,
+                    "q": q,
+                    "k": k,
+                    "v": v,
+                    "out": out,
+                    "softmax_lse": softmax_lse,
+                    "dq": block_dq_buffer,
+                    "dk": block_dk_buffer,
+                    "dv": block_dv_buffer,
+                    "cu_seqlens_q": cu_seqlens,
+                    "cu_seqlens_k": cu_seqlens,
+                    "max_seqlen_q": max_seqlen,
+                    "max_seqlen_k": max_seqlen,
+                    "dropout_p": dropout_p,
+                    "softmax_scale": softmax_scale,
+                    "causal": bwd_causal,
+                    "window_size": window_size,
+                    "alibi_slopes": alibi_slopes,
+                    "deterministic": deterministic,
+                }
             )
+            _flash_attn_varlen_backward(**params)
 
             if dq is None:
                 dq = block_dq_buffer.to(torch.float32)

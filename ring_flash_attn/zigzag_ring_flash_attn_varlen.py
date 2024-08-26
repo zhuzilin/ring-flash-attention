@@ -6,6 +6,7 @@ from flash_attn.flash_attn_interface import (
 from .utils import (
     RingComm,
     update_out_and_lse,
+    get_default_args,
 )
 
 try:
@@ -90,22 +91,27 @@ def zigzag_ring_flash_attn_varlen_forward(
         max_seqlen_q = half_max_seqlen if seqlen_q == block_seq_len else max_seqlen
         cu_seqlens_kv = half_cu_seqlens if seqlen_kv == block_seq_len else cu_seqlens
         max_seqlen_kv = half_max_seqlen if seqlen_kv == block_seq_len else max_seqlen
-        block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(
-            q,
-            k,
-            v,
-            # the first half and the second half are the same
-            cu_seqlens_q,
-            cu_seqlens_kv,
-            max_seqlen_q,
-            max_seqlen_kv,
-            dropout_p,
-            softmax_scale,
-            causal=causal,
-            window_size=window_size,
-            alibi_slopes=alibi_slopes,
-            return_softmax=True and dropout_p > 0,
+
+        params = get_default_args(_flash_attn_varlen_forward).copy()
+        params.update(
+            {
+                "q": q,
+                "k": k,
+                "v": v,
+                # the first half and the second half are the same
+                "cu_seqlens_q": cu_seqlens_q,
+                "cu_seqlens_k": cu_seqlens_kv,
+                "max_seqlen_q": max_seqlen_q,
+                "max_seqlen_k": max_seqlen_kv,
+                "dropout_p": dropout_p,
+                "softmax_scale": softmax_scale,
+                "causal": causal,
+                "window_size": window_size,
+                "alibi_slopes": alibi_slopes,
+                "return_softmax": True and dropout_p > 0,
+            }
         )
+        block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(**params)
         return block_out, block_lse
 
     for step in range(comm.world_size):
@@ -198,29 +204,32 @@ def zigzag_ring_flash_attn_varlen_backward(
         max_seqlen_q = half_max_seqlen if seqlen_q == block_seq_len else max_seqlen
         cu_seqlens_kv = half_cu_seqlens if seqlen_kv == block_seq_len else cu_seqlens
         max_seqlen_kv = half_max_seqlen if seqlen_kv == block_seq_len else max_seqlen
-        _flash_attn_varlen_backward(
-            dout,
-            q,
-            k,
-            v,
-            out,
-            softmax_lse,
-            dq_buffer[:seqlen_q],
-            dk_buffer[:seqlen_kv],
-            dv_buffer[:seqlen_kv],
-            # the first half and the second half are the same
-            cu_seqlens_q,
-            cu_seqlens_kv,
-            max_seqlen_q,
-            max_seqlen_kv,
-            dropout_p,
-            softmax_scale,
-            causal,
-            window_size,
-            alibi_slopes,
-            deterministic,
-            rng_state=None,
+        params = get_default_args(_flash_attn_varlen_backward).copy()
+        params.update(
+            {
+                "dout": dout,
+                "q": q,
+                "k": k,
+                "v": v,
+                "out": out,
+                "softmax_lse": softmax_lse,
+                "dq": dq_buffer[:seqlen_q],
+                "dk": dk_buffer[:seqlen_kv],
+                "dv": dv_buffer[:seqlen_kv],
+                # the first half and the second half are the same
+                "cu_seqlens_q": cu_seqlens_q,
+                "cu_seqlens_k": cu_seqlens_kv,
+                "max_seqlen_q": max_seqlen_q,
+                "max_seqlen_k": max_seqlen_kv,
+                "dropout_p": dropout_p,
+                "softmax_scale": softmax_scale,
+                "causal": causal,
+                "window_size": window_size,
+                "alibi_slopes": alibi_slopes,
+                "deterministic": deterministic,
+            }
         )
+        _flash_attn_varlen_backward(**params)
 
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
