@@ -41,18 +41,33 @@ def get_half_index(cu_seqlens, *, front: bool):
 
 @torch.jit.script
 def get_half_lse(lse, cu_seqlens, *, front: bool):
-    new_lse = torch.empty(
-        (lse.shape[0], lse.shape[1], lse.shape[2] // 2),
-        dtype=lse.dtype,
-        device=lse.device,
-    )
-    for i in range(len(cu_seqlens) - 1):
-        seqlen = (cu_seqlens[i + 1] - cu_seqlens[i]).item()
-        if front:
-            start, end = 0, seqlen // 2
-        else:
-            start, end = seqlen // 2, seqlen
-        new_lse[i, :, : seqlen // 2] = lse[i, :, start:end]
+    if lse.dim() == 2:
+        new_lse = torch.empty(
+            (lse.shape[0], lse.shape[1] // 2),
+            dtype=lse.dtype,
+            device=lse.device,
+        )
+        for i in range(len(cu_seqlens) - 1):
+            start, end = cu_seqlens[i].item(), cu_seqlens[i + 1].item()
+            new_start, new_end = start // 2, end // 2
+            if front:
+                end -= (end - start) // 2
+            else:
+                start += (end - start) // 2
+            new_lse[:, new_start:new_end] = lse[:, start:end]
+    else:
+        new_lse = torch.empty(
+            (lse.shape[0], lse.shape[1], lse.shape[2] // 2),
+            dtype=lse.dtype,
+            device=lse.device,
+        )
+        for i in range(len(cu_seqlens) - 1):
+            seqlen = (cu_seqlens[i + 1] - cu_seqlens[i]).item()
+            if front:
+                start, end = 0, seqlen // 2
+            else:
+                start, end = seqlen // 2, seqlen
+            new_lse[i, :, : seqlen // 2] = lse[i, :, start:end]
     return new_lse
 
 
@@ -114,6 +129,7 @@ def zigzag_ring_flash_attn_varlen_forward(
         block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(**params)
         return block_out, block_lse
 
+    old_lse = False
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
             next_k: torch.Tensor = comm.send_recv(k)
@@ -122,26 +138,32 @@ def zigzag_ring_flash_attn_varlen_forward(
 
         if step == 0:
             block_out, block_lse = forward(q, k, v, causal=True)
-            block_lse = flatten_varlen_lse(
-                block_lse,
-                cu_seqlens=cu_seqlens,
-            )
+            if block_lse.dim() == 3:
+                old_lse = True
+                block_lse = flatten_varlen_lse(
+                    block_lse,
+                    cu_seqlens=cu_seqlens,
+                )
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         elif step <= comm.rank:
             k0 = k[half_index0]
             v0 = v[half_index0]
             block_out, block_lse = forward(q, k0, v0, causal=False)
-            block_lse = flatten_varlen_lse(
-                block_lse,
-                cu_seqlens=cu_seqlens,
-            )
+            if block_lse.dim() == 3:
+                old_lse = True
+                block_lse = flatten_varlen_lse(
+                    block_lse,
+                    cu_seqlens=cu_seqlens,
+                )
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
         else:
             block_out, block_lse = forward(q1, k, v, causal=False)
-            block_lse = flatten_varlen_lse(
-                block_lse,
-                cu_seqlens=half_cu_seqlens,
-            )
+            if block_lse.dim() == 3:
+                old_lse = True
+                block_lse = flatten_varlen_lse(
+                    block_lse,
+                    cu_seqlens=half_cu_seqlens,
+                )
             out[half_index1], lse[half_index1] = update_out_and_lse(
                 out[half_index1], lse[half_index1], block_out, block_lse
             )
@@ -152,7 +174,10 @@ def zigzag_ring_flash_attn_varlen_forward(
             v = next_v
 
     out = out.to(q.dtype)
-    lse = unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
+    if old_lse:
+        lse = unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
+    else:
+        lse = lse.squeeze(dim=-1).transpose(0, 1)
     return out, lse
 
 

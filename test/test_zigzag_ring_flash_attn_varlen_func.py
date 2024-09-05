@@ -8,10 +8,10 @@ import random
 
 def set_seed(rank, seed=42):
     seed = rank + seed
-    random.seed(seed)             
-    torch.manual_seed(seed)      
-    torch.cuda.manual_seed(seed)  
-    torch.cuda.manual_seed_all(seed) 
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def log(msg, a, rank0_only=False):
@@ -56,10 +56,17 @@ def extract_local(value, cu_seqlens, rank, world_size):
 
 def extract_lse(lse, cu_seqlens):
     values = []
-    for i in range(len(cu_seqlens) - 1):
-        start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        value = lse[i, :, : end - start]
-        values.append(value)
+    if lse.dim() == 2:
+        for i in range(len(cu_seqlens) - 1):
+            start, end = cu_seqlens[i], cu_seqlens[i + 1]
+            value = lse[:, start:end]
+            values.append(value)
+    else:
+        assert lse.dim() == 3
+        for i in range(len(cu_seqlens) - 1):
+            start, end = cu_seqlens[i], cu_seqlens[i + 1]
+            value = lse[i, :, : end - start]
+            values.append(value)
     return values
 
 
@@ -162,7 +169,7 @@ if __name__ == "__main__":
     ring_dqkv = local_qkv.grad
 
     log("local_dq", local_dqkv[:, 0])
-    log("dq diff", local_dqkv - ring_dqkv)
+    log("dq diff", local_dqkv[:, 0] - ring_dqkv[:, 0])
 
     log("local_dk", local_dqkv[:, 1])
     log("dk diff", local_dqkv[:, 1] - ring_dqkv[:, 1])
