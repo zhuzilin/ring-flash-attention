@@ -42,6 +42,7 @@ def ring_flash_attn_varlen_forward(
     lse = None
     next_k, next_v = None, None
 
+    old_lse = False
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
             next_k: torch.Tensor = comm.send_recv(k)
@@ -70,10 +71,12 @@ def ring_flash_attn_varlen_forward(
             block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(
                 **params
             )
-            block_lse = flatten_varlen_lse(
-                block_lse,
-                cu_seqlens=cu_seqlens,
-            )
+            if block_lse.dim() == 3:
+                old_lse = True
+                block_lse = flatten_varlen_lse(
+                    block_lse,
+                    cu_seqlens=cu_seqlens,
+                )
             out, lse = update_out_and_lse(out, lse, block_out, block_lse)
 
         if step + 1 != comm.world_size:
@@ -82,7 +85,10 @@ def ring_flash_attn_varlen_forward(
             v = next_v
 
     out = out.to(q.dtype)
-    lse = unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
+    if old_lse:
+        lse = unflatten_varlen_lse(lse, cu_seqlens, max_seqlen)
+    else:
+        lse = lse.squeeze(dim=-1).transpose(0, 1)
     return out, lse
 
 
