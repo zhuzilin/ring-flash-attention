@@ -1,45 +1,8 @@
-import os
-
-from flash_attn import flash_attn_qkvpacked_func
 import torch
 import torch.distributed as dist
+from flash_attn import flash_attn_qkvpacked_func
 from ring_flash_attn import ring_flash_attn_qkvpacked_func
-
-import random
-
-
-def set_seed(rank, seed=42):
-    seed = rank + seed
-    random.seed(seed)             
-    torch.manual_seed(seed)      
-    torch.cuda.manual_seed(seed)  
-    torch.cuda.manual_seed_all(seed) 
-
-
-def log(msg, a, rank0_only=False):
-    world_size = dist.get_world_size()
-    rank = dist.get_rank()
-    if rank0_only:
-        if rank == 0:
-            print(
-                f"{msg}: "
-                f"max {a.abs().max().item()}, "
-                f"mean {a.abs().mean().item()}",
-                flush=True,
-            )
-        return
-
-    for i in range(world_size):
-        if i == rank:
-            if rank == 0:
-                print(f"{msg}:")
-            print(
-                f"[{rank}] "
-                f"max {a.abs().max().item()}, "
-                f"mean {a.abs().mean().item()}",
-                flush=True,
-            )
-        dist.barrier()
+from utils import log, set_seed
 
 
 if __name__ == "__main__":
