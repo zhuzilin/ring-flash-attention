@@ -8,31 +8,6 @@ from ring_flash_attn import (
 from utils import log, set_seed
 
 
-def extract_local(value, cu_seqlens, rank, world_size):
-    local_values = []
-    for i in range(len(cu_seqlens) - 1):
-        start, end = cu_seqlens[i], cu_seqlens[i + 1]
-        local_value = value[start:end].chunk(world_size, dim=0)[rank].detach().clone()
-        local_values.append(local_value)
-    return torch.cat(local_values, dim=0).contiguous()
-
-
-def extract_lse(lse, cu_seqlens):
-    values = []
-    if lse.dim() == 2:
-        for i in range(len(cu_seqlens) - 1):
-            start, end = cu_seqlens[i], cu_seqlens[i + 1]
-            value = lse[:, start:end]
-            values.append(value)
-    else:
-        assert lse.dim() == 3
-        for i in range(len(cu_seqlens) - 1):
-            start, end = cu_seqlens[i], cu_seqlens[i + 1]
-            value = lse[i, :, : end - start]
-            values.append(value)
-    return values
-
-
 if __name__ == "__main__":
     dist.init_process_group("nccl")
     rank = dist.get_rank()
@@ -43,7 +18,7 @@ if __name__ == "__main__":
 
     batch_size = 1
     nheads = 5
-    d = 128
+    d = 8
     dropout_p = 0
     causal = True
     deterministic = False
@@ -110,7 +85,7 @@ if __name__ == "__main__":
         local_cu_seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
-        heads_k_stride=nheads,
+        heads_k_stride=1,
         local_k_slice=local_k_slice,
         dropout_p=dropout_p,
         causal=causal,
@@ -136,7 +111,9 @@ if __name__ == "__main__":
     local_dqkv = dqkv[rank * local_length : (rank + 1) * local_length]
 
     llama3_out.backward(local_dout)
-    ring_dqkv = local_qkv.grad
+    llama3_dqkv = local_qkv.grad
 
-    log("local_dqkv", local_dqkv)
-    log("dqkv diff", local_dqkv - ring_dqkv)
+    log("local_dq", local_dqkv[:, 0])
+    log("dq diff", local_dqkv[:, 0] - llama3_dqkv[:, 0])
+    log("dk diff", local_dqkv[:, 1] - llama3_dqkv[:, 1])
+    log("dv diff", local_dqkv[:, 2] - llama3_dqkv[:, 2])

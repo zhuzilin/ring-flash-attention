@@ -85,11 +85,7 @@ if __name__ == "__main__":
     ring_out.backward(local_dout)
     ring_dqkv = local_qkv.grad
 
-    log("local_dq", local_dqkv[:, :, 0, :])
-    log("dq diff", local_dqkv[:, :, 0, :] - ring_dqkv[:, :, 0, :])
-
-    log("local_dk", local_dqkv[:, :, 1, :])
-    log("dk diff", local_dqkv[:, :, 1, :] - ring_dqkv[:, :, 1, :])
-
-    log("local_dv", local_dqkv[:, :, 2, :])
-    log("dv diff", local_dqkv[:, :, 2, :] - ring_dqkv[:, :, 2, :])
+    log("local_dqkv", local_dqkv)
+    log("dq diff", local_dqkv[:, 0] - ring_dqkv[:, 0])
+    log("dk diff", local_dqkv[:, 1] - ring_dqkv[:, 1])
+    log("dv diff", local_dqkv[:, 2] - ring_dqkv[:, 2])

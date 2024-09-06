@@ -73,15 +73,15 @@ def llama3_flash_attn_varlen_forward(
 
     world_size = dist.get_world_size(process_group)
     kv_buffer = torch.empty(
-        (2, total_k * world_size, nheads_k, head_dim),
+        (2, total_k * world_size, heads_k_stride, head_dim),
         dtype=k.dtype,
         device=k.device,
     )
 
     for i in range(0, nheads_k, heads_k_stride):
         q_i = q[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
-        k_i = k[:, i : i + heads_k_stride]
-        v_i = v[:, i : i + heads_k_stride]
+        k_i = k[:, i : i + heads_k_stride].contiguous()
+        v_i = v[:, i : i + heads_k_stride].contiguous()
 
         dist.all_gather_into_tensor(kv_buffer[0], k_i, group=process_group)
         dist.all_gather_into_tensor(kv_buffer[1], v_i, group=process_group)
@@ -144,7 +144,7 @@ def llama3_flash_attn_varlen_backward(
     world_size = dist.get_world_size(process_group)
     world_size = dist.get_world_size(process_group)
     kv_buffer = torch.empty(
-        (2, total_k * world_size, nheads_k, head_dim),
+        (2, total_k * world_size, heads_k_stride, head_dim),
         dtype=k.dtype,
         device=k.device,
     )
@@ -155,25 +155,37 @@ def llama3_flash_attn_varlen_backward(
         device=k.device,
     )
 
+    if heads_k_stride != nheads_k:
+        kv_contiguous_buffer = torch.empty(
+            (2, total_k, heads_k_stride, head_dim),
+            dtype=k.dtype,
+            device=k.device,
+        )
+
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
 
     for i in range(0, nheads_k, heads_k_stride):
+        dkv_buffer.zero_()
         q_i = q[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
-        k_i = k[:, i : i + heads_k_stride]
-        v_i = v[:, i : i + heads_k_stride]
-        dout_i = dout[
-            :, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k
-        ]
-        out_i = out[
-            :, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k
-        ]
-        lse_i = softmax_lse[
-            i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k
-        ]
+        if heads_k_stride != nheads_k:
+            # all_gather needs contiguous buffer
+            kv_contiguous_buffer[0] = k[:, i : i + heads_k_stride]
+            kv_contiguous_buffer[1] = v[:, i : i + heads_k_stride]
+            k_i = kv_contiguous_buffer[0]
+            v_i = kv_contiguous_buffer[1]
+        else:
+            k_i = k[:, i : i + heads_k_stride]
+            v_i = v[:, i : i + heads_k_stride]
 
-        dq_i = dq[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
+        q_slice = slice(
+            i * nheads // nheads_k, (i + heads_k_stride) * nheads // nheads_k
+        )
+        dout_i = dout[:, q_slice]
+        out_i = out[:, q_slice]
+        lse_i = softmax_lse[q_slice]
+        dq_i = dq[:, q_slice]
 
         dist.all_gather_into_tensor(kv_buffer[0], k_i, group=process_group)
         dist.all_gather_into_tensor(kv_buffer[1], v_i, group=process_group)
@@ -209,10 +221,21 @@ def llama3_flash_attn_varlen_backward(
         )
         _flash_attn_varlen_backward(**params)
 
-        dk_i = dk[:, i : i + heads_k_stride]
-        dv_i = dv[:, i : i + heads_k_stride]
+        if heads_k_stride != nheads_k:
+            # reduce_scatter needs contiguous buffer
+            dk_i = kv_contiguous_buffer[0]
+            dv_i = kv_contiguous_buffer[1]
+        else:
+            dk_i = dk
+            dv_i = dv
+
         dist.reduce_scatter_tensor(dk_i, dkv_buffer[0], group=process_group)
         dist.reduce_scatter_tensor(dv_i, dkv_buffer[1], group=process_group)
+
+        if heads_k_stride != nheads_k:
+            dk[:, i : i + heads_k_stride] = dk_i
+            dv[:, i : i + heads_k_stride] = dv_i
+
     return dq, dk, dv
 
 
@@ -301,7 +324,7 @@ class Llama3FlashAttnVarlenFunc(torch.autograd.Function):
             alibi_slopes=ctx.alibi_slopes,
             deterministic=ctx.deterministic,
         )
-        return (dq, dk, dv) + (None,) * 14
+        return (dq, dk, dv) + (None,) * 15
 
 
 def llama3_flash_attn_varlen_qkvpacked_func(
