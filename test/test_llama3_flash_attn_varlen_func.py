@@ -64,7 +64,8 @@ if __name__ == "__main__":
     )
 
     local_out = out[rank * local_length : (rank + 1) * local_length]
-    local_lse = lse[:, rank * local_length : (rank + 1) * local_length]
+    if lse.dim() == 2:
+        local_lse = lse[:, rank * local_length : (rank + 1) * local_length]
 
     (
         local_cu_seqlens_q,
@@ -97,8 +98,9 @@ if __name__ == "__main__":
 
     log("out", out, rank0_only=True)
     log("out diff", local_out - llama3_out)
-    log("lse", lse, rank0_only=True)
-    log("lse diff", local_lse - llama3_lse)
+    if lse.dim() == 2:
+        log("lse", lse, rank0_only=True)
+        log("lse diff", local_lse - llama3_lse)
 
     dist.barrier()
     if rank == 0:

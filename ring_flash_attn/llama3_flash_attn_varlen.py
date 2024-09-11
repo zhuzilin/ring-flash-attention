@@ -112,7 +112,7 @@ def llama3_flash_attn_varlen_forward(
         lse_list.append(lse)
 
     out = torch.cat(out_list, dim=1)
-    lse = torch.cat(lse_list, dim=0)
+    lse = torch.cat(lse_list, dim=-2)
     return out, lse
 
 
@@ -184,8 +184,11 @@ def llama3_flash_attn_varlen_backward(
         )
         dout_i = dout[:, q_slice]
         out_i = out[:, q_slice]
-        lse_i = softmax_lse[q_slice]
         dq_i = dq[:, q_slice]
+        if softmax_lse.dim() == 3:
+            lse_i = softmax_lse[:, q_slice].contiguous()
+        else:
+            lse_i = softmax_lse[q_slice]
 
         dist.all_gather_into_tensor(kv_buffer[0], k_i, group=process_group)
         dist.all_gather_into_tensor(kv_buffer[1], v_i, group=process_group)
