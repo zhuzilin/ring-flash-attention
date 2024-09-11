@@ -2,19 +2,21 @@
 
 This repo implements the [RingAttention](https://github.com/lhao499/RingAttention) with [FlashAttention](https://github.com/Dao-AILab/flash-attention). Currently, this repo implements:
 
-- `ring_flash_attn_func`: ring attention version of `flash_attn_func`
-- `ring_flash_attn_varlen_func`: ring attention version of `flash_attn_varlen_func`
-- `zigzag_ring_flash_attn_func`: an optimized version of `ring_flash_attn_func`, see [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2)
-- `zigzag_ring_flash_attn_varlen_func`: an optimized version of `ring_flash_attn_varlen_func`
-- `stripe_flash_attn_func`: stripe attention version of `ring_flash_attn_func`, the block size is set to 1 to use flash_attn api.
-- `llama3_flash_attn_varlen_func`: the context parallelism used in [llama3 tech report](https://arxiv.org/abs/2407.21783) with extra design for varlen and low memory overhead.
+- varlen api, corresponding to `flash_attn_varlen_func`:
+  - `llama3_flash_attn_varlen_func`: the context parallelism used in [llama3 tech report](https://arxiv.org/abs/2407.21783) with extra design for varlen and low memory overhead.
+    - Technically, this is not ring attention and will bring memory overhead, but this is the **recommend** api for most use case, as the communication pattern is more friendly to GPU cluster and the arithmetic errors is lower.
+  - `ring_flash_attn_varlen_func`:  naive ring attention.
+  - `zigzag_ring_flash_attn_varlen_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
+- batch api, corresponding to `flash_attn_func`:
+  - `ring_flash_attn_func`: naive ring attention.
+  - `zigzag_ring_flash_attn_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
+  - `stripe_flash_attn_func`: stripe attention version of `ring_flash_attn_func`, the block size is set to 1 to use flash_attn api, see: https://arxiv.org/abs/2311.09431
+  
 
 Note that
 
 - all function has the `*_func`, `*_kvpacked_func`, `*_qkvpacked_func` variant implemented.
 - the varlen versions only support passing one `cu_seqlens`.
-
-The main idea is to use the `softmax_lse` output from the flash attention kernels.
 
 The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](benchmark/benchmark_qkvpacked_func.py)):
 
@@ -32,7 +34,8 @@ The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](be
 Note that
 - when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
 - nvlink between GPUs are required for high performance.
-- the varlen versions are slow at the moment, please use the non-varlen version if possible.
+- the varlen versions of the ring attention variants are slow at the moment, please use the non-varlen version or the llama3 api if possible.
+- please remember to adapt the RoPE offset for different api.
 
 ### Limits
 
@@ -47,7 +50,8 @@ And also because we need to save extra fp32 buffer during computation, the memor
 - [x] Implement `stripe_flash_attn_qkvpacked_func`
 - [x] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
 - [x] Implement `*_kvpacked_func` and `*_func` variant for all APIs
-- [ ] Optimize `*_varlen_func`
+- [x] ~~Optimize `*_varlen_func`~~ Implement `llama3_flash_attn_varlen_func`.
+- [ ] Add an example to train llama.
 - [ ] Try to upstream to flash attention.
 
 ### Test
