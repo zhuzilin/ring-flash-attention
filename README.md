@@ -4,7 +4,7 @@ This repo implements the [RingAttention](https://github.com/lhao499/RingAttentio
 
 - varlen api, corresponding to `flash_attn_varlen_func`:
   - `llama3_flash_attn_varlen_func`: the context parallelism used in [llama3 tech report](https://arxiv.org/abs/2407.21783) with extra design for varlen and low memory overhead.
-    - Technically, this is not ring attention and will bring memory overhead, but this is the **recommend** api for most use case, as the communication pattern is more friendly to GPU cluster and the arithmetic errors is lower.
+    - Technically, this is not ring attention and will bring memory overhead, but this is the **recommended** api for most use case, as the communication pattern is more friendly to GPU cluster and the arithmetic errors is lower.
   - `ring_flash_attn_varlen_func`:  naive ring attention.
   - `zigzag_ring_flash_attn_varlen_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
 - batch api, corresponding to `flash_attn_func`:
