@@ -7,6 +7,20 @@ from flash_attn.flash_attn_interface import (
 from .utils import get_default_args
 
 
+class AsyncHandles:
+
+    def __init__(self) -> None:
+        self.handles = []
+
+    def register(self, handle):
+        self.handles.append(handle)
+
+    def wait(self):
+        for handle in self.handles:
+            handle.wait()
+        self.handles = []
+
+
 def llama3_flash_attn_prepare_cu_seqlens(cu_seqlens, causal, rank, world_size):
     total_length = cu_seqlens[-1].item()
     assert total_length % world_size == 0
@@ -78,14 +92,45 @@ def llama3_flash_attn_varlen_forward(
         device=k.device,
     )
 
+    kv_buffer_copy = torch.empty_like(kv_buffer)
+
+    k_0 = k[:, :heads_k_stride].contiguous()
+    v_0 = v[:, :heads_k_stride].contiguous()
+    async_handles = AsyncHandles()
+
+    async_handles.register(
+        dist.all_gather_into_tensor(
+            kv_buffer_copy[0], k_0, group=process_group, async_op=True
+        )
+    )
+    async_handles.register(
+        dist.all_gather_into_tensor(
+            kv_buffer_copy[1], v_0, group=process_group, async_op=True
+        )
+    )
+
     for i in range(0, nheads_k, heads_k_stride):
+        async_handles.wait()
+        kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
+
+        if i < nheads_k - heads_k_stride:
+            # all_gather the next kv slice
+            kv_slice_left = i + heads_k_stride
+            kv_slice_right = kv_slice_left + heads_k_stride
+            send_k = k[:, kv_slice_left:kv_slice_right].contiguous()
+            send_v = v[:, kv_slice_left:kv_slice_right].contiguous()
+            async_handles.register(
+                dist.all_gather_into_tensor(
+                    kv_buffer_copy[0], send_k, group=process_group, async_op=True
+                )
+            )
+            async_handles.register(
+                dist.all_gather_into_tensor(
+                    kv_buffer_copy[1], send_v, group=process_group, async_op=True
+                )
+            )
+
         q_i = q[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
-        k_i = k[:, i : i + heads_k_stride].contiguous()
-        v_i = v[:, i : i + heads_k_stride].contiguous()
-
-        dist.all_gather_into_tensor(kv_buffer[0], k_i, group=process_group)
-        dist.all_gather_into_tensor(kv_buffer[1], v_i, group=process_group)
-
         k_i = kv_buffer[0][local_k_slice]
         v_i = kv_buffer[1][local_k_slice]
 
@@ -142,12 +187,12 @@ def llama3_flash_attn_varlen_backward(
     assert nheads_k % heads_k_stride == 0
 
     world_size = dist.get_world_size(process_group)
-    world_size = dist.get_world_size(process_group)
     kv_buffer = torch.empty(
         (2, total_k * world_size, heads_k_stride, head_dim),
         dtype=k.dtype,
         device=k.device,
     )
+    kv_buffer_copy = torch.empty_like(kv_buffer)
 
     dkv_buffer = torch.empty(
         (2, total_k * world_size, heads_k_stride, head_dim),
@@ -166,22 +211,28 @@ def llama3_flash_attn_varlen_backward(
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
 
+    async_handles = AsyncHandles()
+
+    k_0 = k[:, :heads_k_stride].contiguous()
+    v_0 = v[:, :heads_k_stride].contiguous()
+    async_handles.register(
+        dist.all_gather_into_tensor(
+            kv_buffer_copy[0], k_0, group=process_group, async_op=True
+        )
+    )
+    async_handles.register(
+        dist.all_gather_into_tensor(
+            kv_buffer_copy[1], v_0, group=process_group, async_op=True
+        )
+    )
+
     for i in range(0, nheads_k, heads_k_stride):
         dkv_buffer.zero_()
-        q_i = q[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
-        if heads_k_stride != nheads_k:
-            # all_gather needs contiguous buffer
-            kv_contiguous_buffer[0] = k[:, i : i + heads_k_stride]
-            kv_contiguous_buffer[1] = v[:, i : i + heads_k_stride]
-            k_i = kv_contiguous_buffer[0]
-            v_i = kv_contiguous_buffer[1]
-        else:
-            k_i = k[:, i : i + heads_k_stride]
-            v_i = v[:, i : i + heads_k_stride]
 
         q_slice = slice(
             i * nheads // nheads_k, (i + heads_k_stride) * nheads // nheads_k
         )
+        q_i = q[:, q_slice]
         dout_i = dout[:, q_slice]
         out_i = out[:, q_slice]
         dq_i = dq[:, q_slice]
@@ -190,8 +241,25 @@ def llama3_flash_attn_varlen_backward(
         else:
             lse_i = softmax_lse[q_slice]
 
-        dist.all_gather_into_tensor(kv_buffer[0], k_i, group=process_group)
-        dist.all_gather_into_tensor(kv_buffer[1], v_i, group=process_group)
+        async_handles.wait()
+        kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
+
+        if i < nheads_k - heads_k_stride:
+            # all_gather the next kv slice
+            kv_slice_left = i + heads_k_stride
+            kv_slice_right = kv_slice_left + heads_k_stride
+            send_k = k[:, kv_slice_left:kv_slice_right].contiguous()
+            send_v = v[:, kv_slice_left:kv_slice_right].contiguous()
+            async_handles.register(
+                dist.all_gather_into_tensor(
+                    kv_buffer_copy[0], send_k, group=process_group, async_op=True
+                )
+            )
+            async_handles.register(
+                dist.all_gather_into_tensor(
+                    kv_buffer_copy[1], send_v, group=process_group, async_op=True
+                )
+            )
 
         k_i = kv_buffer[0][local_k_slice]
         v_i = kv_buffer[1][local_k_slice]
