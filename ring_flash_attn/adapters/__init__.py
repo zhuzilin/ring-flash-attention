@@ -1,0 +1,1 @@
+from .hf_adapter import substitute_hf_flash_attn
