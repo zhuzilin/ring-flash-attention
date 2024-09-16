@@ -29,3 +29,7 @@ from .stripe_flash_attn import (
     stripe_flash_attn_kvpacked_func,
     stripe_flash_attn_qkvpacked_func,
 )
+from .adapters import (
+    substitute_hf_flash_attn,
+    update_ring_flash_attn_params,
+)

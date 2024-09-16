@@ -16,43 +16,47 @@ from ..llama3_flash_attn_varlen import (
 )
 
 
+DATA_PARAMS = {}
+RING_ATTN_SWITCH = True
+
+
 def check_params(f1, f2):
     return len(inspect.signature(f1).parameters) == len(
         inspect.signature(f2).parameters
     )
 
 
+def update_ring_flash_attn_params(
+    cu_seqlens: torch.Tensor, process_group: dist.ProcessGroup
+):
+    world_size = dist.get_world_size(group=process_group)
+    rank = dist.get_rank(group=process_group)
+    (
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        local_k_slice,
+    ) = llama3_flash_attn_prepare_cu_seqlens(cu_seqlens, True, rank, world_size)
+    DATA_PARAMS.update(
+        {
+            "cu_seqlens_q": cu_seqlens_q,
+            "cu_seqlens_k": cu_seqlens_k,
+            "max_seqlen_q": max_seqlen_q,
+            "max_seqlen_k": max_seqlen_k,
+            "local_k_slice": local_k_slice,
+        }
+    )
+
+
+def use_ring_attn(flag):
+    global RING_ATTN_SWITCH
+    RING_ATTN_SWITCH = flag
+
+
 def create_ring_flash_attention_forward(
     process_group: dist.ProcessGroup, heads_k_stride: int
 ):
-    params = {
-        "cu_seqlens_q": None,
-        "cu_seqlens_k": None,
-        "max_seqlen_q": None,
-        "max_seqlen_k": None,
-        "local_k_slice": None,
-    }
-    world_size = dist.get_world_size(group=process_group)
-    rank = dist.get_rank(group=process_group)
-
-    def update_params(cu_seqlens):
-        (
-            cu_seqlens_q,
-            cu_seqlens_k,
-            max_seqlen_q,
-            max_seqlen_k,
-            local_k_slice,
-        ) = llama3_flash_attn_prepare_cu_seqlens(cu_seqlens, True, rank, world_size)
-        params.update(
-            {
-                "cu_seqlens_q": cu_seqlens_q,
-                "cu_seqlens_k": cu_seqlens_k,
-                "max_seqlen_q": max_seqlen_q,
-                "max_seqlen_k": max_seqlen_k,
-                "local_k_slice": local_k_slice,
-            }
-        )
-
     def _flash_attention_forward(
         query_states: torch.Tensor,
         key_states: torch.Tensor,
@@ -124,8 +128,6 @@ def create_ring_flash_attention_forward(
         flash_kwargs["group"] = process_group
 
         # not sure why attention_mask can be not None...
-        assert attention_mask is None
-        assert position_ids is not None
         assert causal, "only causal attention is supported yet."
         batch_size = query_states.size(0)
         assert batch_size == 1, "varlen data should be processed in advance."
@@ -134,12 +136,12 @@ def create_ring_flash_attention_forward(
             query_states.squeeze(dim=0),
             key_states.squeeze(dim=0),
             value_states.squeeze(dim=0),
-            cu_seqlens_q=params["cu_seqlens_q"],
-            cu_seqlens_k=params["cu_seqlens_k"],
-            max_seqlen_q=params["max_seqlen_q"],
-            max_seqlen_k=params["max_seqlen_k"],
+            cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
+            cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
+            max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
+            max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
             heads_k_stride=heads_k_stride,
-            local_k_slice=params["local_k_slice"],
+            local_k_slice=DATA_PARAMS["local_k_slice"],
             dropout_p=dropout,
             softmax_scale=softmax_scale,
             causal=causal,
@@ -150,7 +152,7 @@ def create_ring_flash_attention_forward(
 
         return attn_output
 
-    return _flash_attention_forward, update_params
+    return _flash_attention_forward
 
 
 def substitute_hf_flash_attn(process_group: dist.ProcessGroup, heads_k_stride: int):
@@ -159,12 +161,16 @@ def substitute_hf_flash_attn(process_group: dist.ProcessGroup, heads_k_stride: i
         old_flash_attention_forward = (
             transformers.modeling_flash_attention_utils._flash_attention_forward
         )
-        new_flash_attention_forward, update_flash_attention_params = (
-            create_ring_flash_attention_forward(process_group, heads_k_stride)
+        new_flash_attention_forward = create_ring_flash_attention_forward(
+            process_group, heads_k_stride
         )
         assert check_params(old_flash_attention_forward, new_flash_attention_forward)
         transformers.modeling_flash_attention_utils._flash_attention_forward = (
-            new_flash_attention_forward
+            lambda *args, **kwargs: (
+                new_flash_attention_forward(*args, **kwargs)
+                if RING_ATTN_SWITCH
+                else old_flash_attention_forward(*args, **kwargs)
+            )
         )
     except:
         raise ValueError(
@@ -173,4 +179,3 @@ def substitute_hf_flash_attn(process_group: dist.ProcessGroup, heads_k_stride: i
             "If the code failed with the latest version, "
             "please file an issue to https://github.com/zhuzilin/ring-flash-attention/issues"
         )
-    return update_flash_attention_params
