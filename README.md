@@ -37,6 +37,20 @@ Note that
 - the varlen versions of the ring attention variants are slow at the moment, please use the non-varlen version or the llama3 api if possible.
 - please remember to adapt the RoPE offset for different api.
 
+### Installation
+
+```bash
+pip install ring-flash-attn
+```
+
+or use the following command to build from source:
+
+```bash
+git clone https://github.com/zhuzilin/ring-flash-attention.git
+cd ring-flash-attention
+pip install .
+```
+
 ### Limits
 
 There are some arithmetic errors with the current implementation. The reason for them is probably that flash attention will return bf16 value for each block, so we cannot accumluate the values with the original fp32 ones.
