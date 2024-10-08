@@ -11,7 +11,7 @@ This repo implements the [RingAttention](https://github.com/lhao499/RingAttentio
   - `ring_flash_attn_func`: naive ring attention.
   - `zigzag_ring_flash_attn_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
   - `stripe_flash_attn_func`: stripe attention version of `ring_flash_attn_func`, the block size is set to 1 to use flash_attn api, see: https://arxiv.org/abs/2311.09431
-  
+- [huggingface model adapter](ring_flash_attn/adapters/hf_adapter.py). Here is an example to use the adapter: [OpenRLHF/OpenRLHF/pull#439](https://github.com/OpenRLHF/OpenRLHF/pull/439/files).
 
 Note that
 
@@ -65,7 +65,7 @@ And also because we need to save extra fp32 buffer during computation, the memor
 - [x] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
 - [x] Implement `*_kvpacked_func` and `*_func` variant for all APIs
 - [x] ~~Optimize `*_varlen_func`~~ Implement `llama3_flash_attn_varlen_func`.
-- [ ] Add an example to train llama.
+- [x] ~~Add an example to train llama.~~ Implement adapter for huggingface model.
 - [ ] Try to upstream to flash attention.
 
 ### Test
