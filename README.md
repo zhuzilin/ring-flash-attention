@@ -18,24 +18,34 @@ Note that
 - all function has the `*_func`, `*_kvpacked_func`, `*_qkvpacked_func` variant implemented.
 - the varlen versions only support passing one `cu_seqlens`.
 
-The current performance on 8xH800 is ([benchmark/benchmark_qkvpacked_func.py](benchmark/benchmark_qkvpacked_func.py)):
+The current performance is:
 
-|                      | GPU    | theoretic flash_attn | ring_attn | zigzag_ring | stripe_attn |
-| -------------------- | ------ | -------------------- | --------- | ----------- | ----------- |
-| fwd only (iter/sec)  | 8xH800 | 2418.4 / 8 = 302.3   | 208.0     | 283.0       | 259.6       |
-|                      |        |                      | 68.8%     | **93.6%**   | 85.9%       |
-| fwd + bwd (iter/sec) | 8xH800 | 705.2 / 8 = 88.2     | 54.3      | 75.7        | 76.9        |
-|                      |        |                      | 61.5%     | 85.9%       | **87.2%**   |
-| fwd only (iter/sec)  | 8xA100 | 1545.9 / 8 = 193.2   | 124.4     | 179.0       | 163.9       |
-|                      |        |                      | 64.3%     | **92.7%**   | 84.8%       |
-| fwd + bwd (iter/sec) | 8xA100 | 470.6 / 8 = 58.8     | 33.3      | 49.5        | 45.9        |
-|                      |        |                      | 56.6%     | **84.1%**   | 78.1%       |
+| batch api            | GPU     | theoretic<br />flash_attn     | ring_attn     | zigzag_ring     | stripe_attn |
+| -------------------- | ------- | ----------------------------- | ------------- | --------------- | ----------- |
+| fwd only (iter/sec)  | 8xH800  | 591.5 / 8 = 73.9              | 38.5          | 63.0            | 55.0        |
+|                      |         |                               | 52.1%         | **85.2%**       | 74.4%       |
+| fwd + bwd (iter/sec) | 8xH800  | 154.7 / 8 = 19.3              | 10.4          | 17.4            | 16.0        |
+|                      |         |                               | 53.9%         | **90.2%**       | 82.9%       |
+| fwd only (iter/sec)  | 8xA100  | 373.4 / 8 = 46.7              | 24.0          | 38.2            | 32.5        |
+|                      |         |                               | 51.4%         | **81.7%**       | 69.6%       |
+| fwd + bwd (iter/sec) | 8xA100  | 94.7 / 8 = 11.8               | 6.2           | 10.6            | 9.75        |
+|                      |         |                               | 52.5%         | **89.8%**       | 82.6%       |
+| **varlen api**       | **GPU** | **theoretic<br />flash_attn** | **ring_attn** | **zigzag_ring** |             |
+| fwd only (iter/sec)  | 8xH800  | 852.4 / 8 = 106.6             | 52.4          | 74.8            |             |
+|                      |         |                               | 49.1%         | **70.2%**       |             |
+| fwd + bwd (iter/sec) | 8xH800  | 225.4 / 8 = 28.2              | 14.4          | 21.4            |             |
+|                      |         |                               | 51.1%         | **75.9%**       |             |
+| fwd only (iter/sec)  | 8xA100  | 532.3 / 8 = 66.5              | 33.1          | 47.9            |             |
+|                      |         |                               | 49.8%         | **72.0%**       |             |
+| fwd + bwd (iter/sec) | 8xA100  | 133.8 / 8 = 16.7              | 8.7           | 13.4            |             |
+|                      |         |                               | 52.1%         | **80.2%**       |             |
 
 Note that
-- when running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention.
-- nvlink between GPUs are required for high performance.
-- the varlen versions of the ring attention variants are slow at the moment, please use the non-varlen version or the llama3 api if possible.
-- please remember to adapt the RoPE offset for different api.
+
+- The code of the benchmark is in [benchmark](benchmark/), the config of the attention is set to the same as [Meta-Llama-3.1-8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B/blob/main/config.json) and each GPU will run with a total sequence of length 8k.
+- When running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention, as flash attn code is running $8*1^2$, while the ring attn code is running $1*8^2$.
+- NVLink between GPUs are required for high performance.
+- Please remember to adapt the RoPE offset for different api.
 
 ### Installation
 
@@ -66,7 +76,6 @@ And also because we need to save extra fp32 buffer during computation, the memor
 - [x] Implement `*_kvpacked_func` and `*_func` variant for all APIs
 - [x] ~~Optimize `*_varlen_func`~~ Implement `llama3_flash_attn_varlen_func`.
 - [x] ~~Add an example to train llama.~~ Implement adapter for huggingface model.
-- [ ] Try to upstream to flash attention.
 
 ### Test
 
@@ -82,8 +91,8 @@ torchrun --nproc_per_node 8 test/test_stripe_flash_attn_func.py
 ### Benchmark
 
 ```bash
-torchrun --nproc_per_node 8 benchmark/benchmark_qkvpacked_func.py
-torchrun --nproc_per_node 8 benchmark/benchmark_varlen_qkvpacked_func.py
+torchrun --nproc_per_node 8 benchmark/benchmark_kvpacked_func.py
+torchrun --nproc_per_node 8 benchmark/benchmark_varlen_kvpacked_func.py
 ```
 
 ### Known Limits

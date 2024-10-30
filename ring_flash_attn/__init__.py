@@ -21,7 +21,7 @@ from .zigzag_ring_flash_attn import (
 )
 from .zigzag_ring_flash_attn_varlen import (
     zigzag_ring_flash_attn_varlen_func,
-    zigzag_ring_flash_attn_varlen_qkvpacked_func,
+    zigzag_ring_flash_attn_varlen_kvpacked_func,
     zigzag_ring_flash_attn_varlen_qkvpacked_func,
 )
 from .stripe_flash_attn import (
