@@ -3,10 +3,9 @@
 This repo implements the [RingAttention](https://github.com/lhao499/RingAttention) with [FlashAttention](https://github.com/Dao-AILab/flash-attention). Currently, this repo implements:
 
 - varlen api, corresponding to `flash_attn_varlen_func`:
-  - `llama3_flash_attn_varlen_func`: the context parallelism used in [llama3 tech report](https://arxiv.org/abs/2407.21783) with extra design for varlen and low memory overhead.
-    - Technically, this is not ring attention and will bring memory overhead, but this is the **recommended** api for most use case, as the communication pattern is more friendly to GPU cluster and the arithmetic errors is lower.
   - `ring_flash_attn_varlen_func`:  naive ring attention.
   - `zigzag_ring_flash_attn_varlen_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
+  - `llama3_flash_attn_varlen_func`: the context parallelism used in [llama3 tech report](https://arxiv.org/abs/2407.21783) with extra design for varlen and low memory overhead.
 - batch api, corresponding to `flash_attn_func`:
   - `ring_flash_attn_func`: naive ring attention.
   - `zigzag_ring_flash_attn_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
@@ -20,25 +19,25 @@ Note that
 
 The current performance is:
 
-| batch api            | GPU     | theoretic<br />flash_attn     | ring_attn     | zigzag_ring     | stripe_attn |
-| -------------------- | ------- | ----------------------------- | ------------- | --------------- | ----------- |
-| fwd only (iter/sec)  | 8xH800  | 591.5 / 8 = 73.9              | 38.5          | 63.0            | 55.0        |
-|                      |         |                               | 52.1%         | **85.2%**       | 74.4%       |
-| fwd + bwd (iter/sec) | 8xH800  | 154.7 / 8 = 19.3              | 10.4          | 17.4            | 16.0        |
-|                      |         |                               | 53.9%         | **90.2%**       | 82.9%       |
-| fwd only (iter/sec)  | 8xA100  | 373.4 / 8 = 46.7              | 24.0          | 38.2            | 32.5        |
-|                      |         |                               | 51.4%         | **81.7%**       | 69.6%       |
-| fwd + bwd (iter/sec) | 8xA100  | 94.7 / 8 = 11.8               | 6.2           | 10.6            | 9.75        |
-|                      |         |                               | 52.5%         | **89.8%**       | 82.6%       |
-| **varlen api**       | **GPU** | **theoretic<br />flash_attn** | **ring_attn** | **zigzag_ring** |             |
-| fwd only (iter/sec)  | 8xH800  | 852.4 / 8 = 106.6             | 52.4          | 74.8            |             |
-|                      |         |                               | 49.1%         | **70.2%**       |             |
-| fwd + bwd (iter/sec) | 8xH800  | 225.4 / 8 = 28.2              | 14.4          | 21.4            |             |
-|                      |         |                               | 51.1%         | **75.9%**       |             |
-| fwd only (iter/sec)  | 8xA100  | 532.3 / 8 = 66.5              | 33.1          | 47.9            |             |
-|                      |         |                               | 49.8%         | **72.0%**       |             |
-| fwd + bwd (iter/sec) | 8xA100  | 133.8 / 8 = 16.7              | 8.7           | 13.4            |             |
-|                      |         |                               | 52.1%         | **80.2%**       |             |
+| batch api            | GPU     | theoretic<br />flash_attn     | ring_attn     | zigzag_ring     | stripe_attn     |
+| -------------------- | ------- | ----------------------------- | ------------- | --------------- | --------------- |
+| fwd only (iter/sec)  | 8xH800  | 591.5 / 8 = 73.9              | 38.5          | 63.0            | 55.0            |
+|                      |         |                               | 52.1%         | **85.2%**       | 74.4%           |
+| fwd + bwd (iter/sec) | 8xH800  | 154.7 / 8 = 19.3              | 10.4          | 17.4            | 16.0            |
+|                      |         |                               | 53.9%         | **90.2%**       | 82.9%           |
+| fwd only (iter/sec)  | 8xA100  | 373.4 / 8 = 46.7              | 24.0          | 38.2            | 32.5            |
+|                      |         |                               | 51.4%         | **81.7%**       | 69.6%           |
+| fwd + bwd (iter/sec) | 8xA100  | 94.7 / 8 = 11.8               | 6.2           | 10.6            | 9.75            |
+|                      |         |                               | 52.5%         | **89.8%**       | 82.6%           |
+| **varlen api**       | **GPU** | **theoretic<br />flash_attn** | **ring_attn** | **zigzag_ring** | **llama3_attn** |
+| fwd only (iter/sec)  | 8xH800  | 852.4 / 8 = 106.6             | 52.4          | 74.8            | 60.8            |
+|                      |         |                               | 49.1%         | **70.2%**       | 57.0%           |
+| fwd + bwd (iter/sec) | 8xH800  | 225.4 / 8 = 28.2              | 14.4          | 21.4            | 16.4            |
+|                      |         |                               | 51.1%         | **75.9%**       | 58.1%           |
+| fwd only (iter/sec)  | 8xA100  | 532.3 / 8 = 66.5              | 33.1          | 47.9            | 34.3            |
+|                      |         |                               | 49.8%         | **72.0%**       | 51.6%           |
+| fwd + bwd (iter/sec) | 8xA100  | 133.8 / 8 = 16.7              | 8.7           | 13.4            | 9.7             |
+|                      |         |                               | 52.1%         | **80.2%**       | 58.0%           |
 
 Note that
 
@@ -46,6 +45,7 @@ Note that
 - When running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention, as flash attn code is running $8*1^2$, while the ring attn code is running $1*8^2$.
 - NVLink between GPUs are required for high performance.
 - Please remember to adapt the RoPE offset for different api.
+- Technically, the llama3 series of APIs is not ring attention and will bring memory overhead, but its communication pattern is more friendly to GPU cluster and the arithmetic errors is lower.
 
 ### Installation
 
@@ -74,8 +74,9 @@ And also because we need to save extra fp32 buffer during computation, the memor
 - [x] Implement `stripe_flash_attn_qkvpacked_func`
 - [x] Implement `zigzag_ring_flash_attn_varlen_qkvpacked_func`
 - [x] Implement `*_kvpacked_func` and `*_func` variant for all APIs
-- [x] ~~Optimize `*_varlen_func`~~ Implement `llama3_flash_attn_varlen_func`.
-- [x] ~~Add an example to train llama.~~ Implement adapter for huggingface model.
+- [x] ~~Optimize `*_varlen_func`~~ Implement `llama3_flash_attn_varlen_func`
+- [x] ~~Add an example to train llama~~ Implement adapter for huggingface model
+- [ ] Implement `zigzag_llama3_flash_attn_varlen_func`
 
 ### Test
 
