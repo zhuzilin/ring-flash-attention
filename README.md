@@ -42,7 +42,7 @@ The current performance is:
 Note that
 
 - The code of the benchmark is in [benchmark](benchmark/), the config of the attention is set to the same as [Meta-Llama-3.1-8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B/blob/main/config.json) and each GPU will run with a total sequence of length 8k.
-- When running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention, as flash attn code is running $8*1^2$, while the ring attn code is running $1*8^2$.
+- When running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention, as flash attn code is running `8*1^2`, while the ring attn code is running `1*8^2`.
 - NVLink between GPUs are required for high performance.
 - Please remember to adapt the RoPE offset for different api.
 - Technically, the llama3 series of APIs is not ring attention and will bring memory overhead, but its communication pattern is more friendly to GPU cluster and the arithmetic errors is lower.
