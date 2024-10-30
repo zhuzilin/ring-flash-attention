@@ -130,3 +130,20 @@ class RingComm:
             req.wait()
         self._reqs = None
         self._ops = []
+
+
+class AllGatherComm:
+    def __init__(self, group=None) -> None:
+        self.group = group
+        self.handles = []
+
+    def all_gather(self, output_tensor: torch.Tensor, input_tensor: torch.Tensor):
+        handle = dist.all_gather_into_tensor(
+            output_tensor, input_tensor, group=self.group, async_op=True
+        )
+        self.handles.append(handle)
+
+    def wait(self):
+        for handle in self.handles:
+            handle.wait()
+        self.handles = []

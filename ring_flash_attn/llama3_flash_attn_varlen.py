@@ -4,24 +4,7 @@ from flash_attn.flash_attn_interface import (
     _flash_attn_varlen_forward,
     _flash_attn_varlen_backward,
 )
-from .utils import get_default_args
-
-
-class Comm:
-    def __init__(self, group=None) -> None:
-        self.group = group
-        self.handles = []
-
-    def all_gather(self, output_tensor: torch.Tensor, input_tensor: torch.Tensor):
-        handle = dist.all_gather_into_tensor(
-            output_tensor, input_tensor, group=self.group, async_op=True
-        )
-        self.handles.append(handle)
-
-    def wait(self):
-        for handle in self.handles:
-            handle.wait()
-        self.handles = []
+from .utils import get_default_args, AllGatherComm as Comm
 
 
 def llama3_flash_attn_prepare_cu_seqlens(cu_seqlens, causal, rank, world_size):
