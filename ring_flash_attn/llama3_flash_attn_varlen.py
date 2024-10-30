@@ -7,12 +7,15 @@ from flash_attn.flash_attn_interface import (
 from .utils import get_default_args
 
 
-class AsyncHandles:
-
-    def __init__(self) -> None:
+class Comm:
+    def __init__(self, group=None) -> None:
+        self.group = group
         self.handles = []
 
-    def register(self, handle):
+    def all_gather(self, output_tensor: torch.Tensor, input_tensor: torch.Tensor):
+        handle = dist.all_gather_into_tensor(
+            output_tensor, input_tensor, group=self.group, async_op=True
+        )
         self.handles.append(handle)
 
     def wait(self):
@@ -96,21 +99,13 @@ def llama3_flash_attn_varlen_forward(
 
     k_0 = k[:, :heads_k_stride].contiguous()
     v_0 = v[:, :heads_k_stride].contiguous()
-    async_handles = AsyncHandles()
+    comm = Comm(process_group)
 
-    async_handles.register(
-        dist.all_gather_into_tensor(
-            kv_buffer_copy[0], k_0, group=process_group, async_op=True
-        )
-    )
-    async_handles.register(
-        dist.all_gather_into_tensor(
-            kv_buffer_copy[1], v_0, group=process_group, async_op=True
-        )
-    )
+    comm.all_gather(kv_buffer_copy[0], k_0)
+    comm.all_gather(kv_buffer_copy[1], v_0)
 
     for i in range(0, nheads_k, heads_k_stride):
-        async_handles.wait()
+        comm.wait()
         kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
 
         if i < nheads_k - heads_k_stride:
@@ -119,16 +114,8 @@ def llama3_flash_attn_varlen_forward(
             kv_slice_right = kv_slice_left + heads_k_stride
             send_k = k[:, kv_slice_left:kv_slice_right].contiguous()
             send_v = v[:, kv_slice_left:kv_slice_right].contiguous()
-            async_handles.register(
-                dist.all_gather_into_tensor(
-                    kv_buffer_copy[0], send_k, group=process_group, async_op=True
-                )
-            )
-            async_handles.register(
-                dist.all_gather_into_tensor(
-                    kv_buffer_copy[1], send_v, group=process_group, async_op=True
-                )
-            )
+            comm.all_gather(kv_buffer_copy[0], send_k)
+            comm.all_gather(kv_buffer_copy[1], send_v)
 
         q_i = q[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
         k_i = kv_buffer[0][local_k_slice]
@@ -211,20 +198,12 @@ def llama3_flash_attn_varlen_backward(
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
 
-    async_handles = AsyncHandles()
+    comm = Comm(process_group)
 
     k_0 = k[:, :heads_k_stride].contiguous()
     v_0 = v[:, :heads_k_stride].contiguous()
-    async_handles.register(
-        dist.all_gather_into_tensor(
-            kv_buffer_copy[0], k_0, group=process_group, async_op=True
-        )
-    )
-    async_handles.register(
-        dist.all_gather_into_tensor(
-            kv_buffer_copy[1], v_0, group=process_group, async_op=True
-        )
-    )
+    comm.all_gather(kv_buffer_copy[0], k_0)
+    comm.all_gather(kv_buffer_copy[1], v_0)
 
     for i in range(0, nheads_k, heads_k_stride):
         dkv_buffer.zero_()
@@ -241,7 +220,7 @@ def llama3_flash_attn_varlen_backward(
         else:
             lse_i = softmax_lse[q_slice]
 
-        async_handles.wait()
+        comm.wait()
         kv_buffer, kv_buffer_copy = kv_buffer_copy, kv_buffer
 
         if i < nheads_k - heads_k_stride:
@@ -250,16 +229,8 @@ def llama3_flash_attn_varlen_backward(
             kv_slice_right = kv_slice_left + heads_k_stride
             send_k = k[:, kv_slice_left:kv_slice_right].contiguous()
             send_v = v[:, kv_slice_left:kv_slice_right].contiguous()
-            async_handles.register(
-                dist.all_gather_into_tensor(
-                    kv_buffer_copy[0], send_k, group=process_group, async_op=True
-                )
-            )
-            async_handles.register(
-                dist.all_gather_into_tensor(
-                    kv_buffer_copy[1], send_v, group=process_group, async_op=True
-                )
-            )
+            comm.all_gather(kv_buffer_copy[0], send_k)
+            comm.all_gather(kv_buffer_copy[1], send_v)
 
         k_i = kv_buffer[0][local_k_slice]
         v_i = kv_buffer[1][local_k_slice]
