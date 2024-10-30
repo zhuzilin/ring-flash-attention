@@ -7,7 +7,20 @@ from flash_attn.flash_attn_interface import (
 from .utils import get_default_args, AllGatherComm as Comm
 
 
-def llama3_flash_attn_prepare_cu_seqlens(cu_seqlens, causal, rank, world_size):
+def llama3_flash_attn_prepare_cu_seqlens(
+    cu_seqlens: torch.Tensor, causal: bool, rank: int, world_size: int
+):
+    """
+    Args:
+        cu_seqlens: torch.Tensor, the cu_seqlens of all the sequences across the ring process group.
+
+    Returns:
+        cu_seqlens_q: torch.Tensor, the cu_seqlens of the q slice for this rank.
+        cu_seqlens_k: torch.Tensor, the cu_seqlens of the k slice that the local q need. Note
+            that this may be longer than `total_seq_len // world_size`.
+        local_k_slice: slice, the slice of the k that the local q need. Note
+            that this may be longer than `total_seq_len // world_size`.
+    """
     total_length = cu_seqlens[-1].item()
     assert total_length % world_size == 0
     length_per_rank = total_length // world_size
