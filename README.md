@@ -1,23 +1,25 @@
 ## Ring Flash Attention
 
-This repo implements the [RingAttention](https://github.com/lhao499/RingAttention) with [FlashAttention](https://github.com/Dao-AILab/flash-attention). Currently, this repo implements:
+This repo implements [RingAttention](https://github.com/lhao499/RingAttention) using [FlashAttention](https://github.com/Dao-AILab/flash-attention). The current implementation supports:
 
-- varlen api, corresponding to `flash_attn_varlen_func`:
-  - `ring_flash_attn_varlen_func`:  naive ring attention.
-  - `zigzag_ring_flash_attn_varlen_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
-  - `llama3_flash_attn_varlen_func`: the context parallelism used in [llama3 tech report](https://arxiv.org/abs/2407.21783) with extra design for varlen and low memory overhead.
+- varlen (packing samples) api, corresponding to `flash_attn_varlen_func`:
+  - `ring_flash_attn_varlen_func`:  A basic implementation of ring attention.
+  - `zigzag_ring_flash_attn_varlen_func`: an more compute-balanced version of ring attention. More details in [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
+  - `llama3_flash_attn_varlen_func`: The context parallelism used in [llama3 tech report](https://arxiv.org/abs/2407.21783) with extra design for varlen and low memory overhead. Although technically not ring attention, this is **recommended** for most varlen use cases, as it offers a less intrusive alternative for training frameworks with fewer data manipulations and better arithmetic precision.
 - batch api, corresponding to `flash_attn_func`:
-  - `ring_flash_attn_func`: naive ring attention.
-  - `zigzag_ring_flash_attn_func`: an more compute balanced version of ring attention, see  [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
-  - `stripe_flash_attn_func`: stripe attention version of `ring_flash_attn_func`, the block size is set to 1 to use flash_attn api, see: https://arxiv.org/abs/2311.09431
+  - `ring_flash_attn_func`: basic ring attention.
+  - `zigzag_ring_flash_attn_func`: An more compute balanced version of ring attention, see [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
+  - `stripe_flash_attn_func`: Stripe attention version of `ring_flash_attn_func`, the block size is set to 1 to use flash_attn api, see: https://arxiv.org/abs/2311.09431
 - [huggingface model adapter](ring_flash_attn/adapters/hf_adapter.py). Here is an example to use the adapter: [OpenRLHF/OpenRLHF/pull#439](https://github.com/OpenRLHF/OpenRLHF/pull/439/files).
 
 Note that
 
-- all function has the `*_func`, `*_kvpacked_func`, `*_qkvpacked_func` variant implemented.
-- the varlen versions only support passing one `cu_seqlens`.
+- Each function includes `*_func`, `*_kvpacked_func`, `*_qkvpacked_func` variants.
+- The varlen versions (except the llama3 version) only support passing one `cu_seqlens`.
 
-The current performance is:
+## Performance Summary
+
+The following table summarizes the performance of the implemented APIs:
 
 | batch api            | GPU     | theoretic<br />flash_attn     | ring_attn     | zigzag_ring     | stripe_attn     |
 | -------------------- | ------- | ----------------------------- | ------------- | --------------- | --------------- |
@@ -41,11 +43,10 @@ The current performance is:
 
 Note that
 
-- The code of the benchmark is in [benchmark](benchmark/), the config of the attention is set to the same as [Meta-Llama-3.1-8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B/blob/main/config.json) and each GPU will run with a total sequence of length 8k.
+- The code of the benchmark is in [benchmark](benchmark/), its configuration matches the [Meta-Llama-3.1-8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B/blob/main/config.json) setting, with a total sequence of length 8k per GPU.
 - When running the benchmark with with 8 gpu, the flash attn code is running with 1/8 computation of ring attention, as flash attn code is running `8*1^2`, while the ring attn code is running `1*8^2`.
 - NVLink between GPUs are required for high performance.
 - Please remember to adapt the RoPE offset for different api.
-- Technically, the llama3 series of APIs is not ring attention and will bring memory overhead, but its communication pattern is more friendly to GPU cluster and the arithmetic errors is lower.
 
 ### Installation
 
@@ -60,12 +61,6 @@ git clone https://github.com/zhuzilin/ring-flash-attention.git
 cd ring-flash-attention
 pip install .
 ```
-
-### Limits
-
-There are some arithmetic errors with the current implementation. The reason for them is probably that flash attention will return bf16 value for each block, so we cannot accumluate the values with the original fp32 ones.
-
-And also because we need to save extra fp32 buffer during computation, the memory usage would be higher than theoretic limit.
 
 ### TODOs
 
@@ -96,7 +91,13 @@ torchrun --nproc_per_node 8 benchmark/benchmark_kvpacked_func.py
 torchrun --nproc_per_node 8 benchmark/benchmark_varlen_kvpacked_func.py
 ```
 
-### Known Limits
+### Known Limitations
+
+There are some arithmetic errors with the current implementation. The reason for them is probably that flash attention will return bf16 value for each block, so we cannot accumluate the values with the original fp32 ones.
+
+And also because we need to save extra fp32 buffer during computation, the memory usage would be higher than theoretic limit.
+
+Also,
 
 - dropout is not supported at the moment, because it's hard to save all the rng_states.
 - window_size is not supported, because it will be really tricky to implement a varlen version with window_size.
