@@ -121,12 +121,25 @@ def zigzag_ring_flash_attn_varlen_forward(
                 "dropout_p": dropout_p,
                 "softmax_scale": softmax_scale,
                 "causal": causal,
-                "window_size": window_size,
                 "alibi_slopes": alibi_slopes,
                 "return_softmax": True and dropout_p > 0,
             }
         )
-        block_out, _, _, _, _, block_lse, _, _ = _flash_attn_varlen_forward(**params)
+        if "window_size" in params:
+            params.update({"window_size": window_size})
+        else:
+            params.update(
+                {
+                    "window_size_left": window_size[0],
+                    "window_size_right": window_size[1],
+                }
+            )
+        outputs = _flash_attn_varlen_forward(**params)
+        if len(outputs) == 8:
+            block_out, _, _, _, _, block_lse, _, _ = outputs
+        else:
+            assert len(outputs) == 4
+            block_out, block_lse, _, _ = outputs
         return block_out, block_lse
 
     old_lse = False
@@ -249,11 +262,19 @@ def zigzag_ring_flash_attn_varlen_backward(
                 "dropout_p": dropout_p,
                 "softmax_scale": softmax_scale,
                 "causal": causal,
-                "window_size": window_size,
                 "alibi_slopes": alibi_slopes,
                 "deterministic": deterministic,
             }
         )
+        if "window_size" in params:
+            params.update({"window_size": window_size})
+        else:
+            params.update(
+                {
+                    "window_size_left": window_size[0],
+                    "window_size_right": window_size[1],
+                }
+            )
         _flash_attn_varlen_backward(**params)
 
     for step in range(kv_comm.world_size):
