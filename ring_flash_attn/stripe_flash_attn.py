@@ -28,9 +28,7 @@ def stripe_flash_attn_forward(
 
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k: torch.Tensor = comm.send_recv(k)
-            next_v: torch.Tensor = comm.send_recv(v)
-            comm.commit()
+            next_k, next_v = comm.send_recv_kv(k, v)
 
         params = get_default_args(_flash_attn_forward).copy()
         if step <= comm.rank:
@@ -133,9 +131,7 @@ def stripe_flash_attn_backward(
     block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k)
-            next_v = kv_comm.send_recv(v)
-            kv_comm.commit()
+            next_k, next_v = kv_comm.send_recv_kv(k, v)
 
         shift_causal = step > kv_comm.rank
         softmax_lse_1 = None
@@ -226,9 +222,9 @@ def stripe_flash_attn_backward(
             kv_comm.wait()
             k, v = next_k, next_v
 
-        next_dk = d_kv_comm.send_recv(dk, dk_comm_buffer)
-        next_dv = d_kv_comm.send_recv(dv, dv_comm_buffer)
-        d_kv_comm.commit()
+        next_dk, next_dv = d_kv_comm.send_recv_kv(
+            dk, dv, dk_comm_buffer, dv_comm_buffer
+        )
 
     d_kv_comm.wait()
 

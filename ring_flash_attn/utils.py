@@ -139,6 +139,17 @@ class RingComm:
         self._reqs = None
         self._ops = []
 
+    def send_recv_kv(
+        self,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        k_buffer: Optional[torch.Tensor] = None,
+        v_buffer: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        next_k, next_v = self.send_recv(k, k_buffer), self.send_recv(v, v_buffer)
+        self.commit()
+        return next_k, next_v
+
 
 class AllGatherComm:
     def __init__(self, group=None) -> None:

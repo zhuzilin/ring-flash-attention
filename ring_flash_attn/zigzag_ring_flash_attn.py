@@ -59,9 +59,7 @@ def zigzag_ring_flash_attn_forward(
 
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k: torch.Tensor = comm.send_recv(k)
-            next_v: torch.Tensor = comm.send_recv(v)
-            comm.commit()
+            next_k, next_v = comm.send_recv_kv(k, v)
 
         if step == 0:
             block_out, block_lse = forward(q, k, v, causal=True)
@@ -159,9 +157,7 @@ def zigzag_ring_flash_attn_backward(
 
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k)
-            next_v = kv_comm.send_recv(v)
-            kv_comm.commit()
+            next_k, next_v = kv_comm.send_recv_kv(k, v)
 
         if step == 0:
             backward(dout, q, k, v, out, softmax_lse, causal=True)
@@ -194,9 +190,9 @@ def zigzag_ring_flash_attn_backward(
             kv_comm.wait()
             k, v = next_k, next_v
 
-        next_dk = d_kv_comm.send_recv(dk, dk_comm_buffer)
-        next_dv = d_kv_comm.send_recv(dv, dv_comm_buffer)
-        d_kv_comm.commit()
+        next_dk, next_dv = d_kv_comm.send_recv_kv(
+            dk, dv, dk_comm_buffer, dv_comm_buffer
+        )
 
     d_kv_comm.wait()
 

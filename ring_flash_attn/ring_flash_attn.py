@@ -25,9 +25,7 @@ def ring_flash_attn_forward(
 
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k: torch.Tensor = comm.send_recv(k)
-            next_v: torch.Tensor = comm.send_recv(v)
-            comm.commit()
+            next_k, next_v = comm.send_recv_kv(k, v)
 
         if not causal or step <= comm.rank:
             params = get_default_args(_flash_attn_forward).copy()
@@ -98,9 +96,8 @@ def ring_flash_attn_backward(
 
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k = kv_comm.send_recv(k)
-            next_v = kv_comm.send_recv(v)
-            kv_comm.commit()
+            next_k, next_v = kv_comm.send_recv_kv(k, v)
+
         if step <= kv_comm.rank or not causal:
             bwd_causal = causal and step == 0
             params = get_default_args(_flash_attn_backward).copy()
@@ -150,9 +147,7 @@ def ring_flash_attn_backward(
             kv_comm.wait()
             k, v = next_k, next_v
 
-        next_dk = d_kv_comm.send_recv(dk)
-        next_dv = d_kv_comm.send_recv(dv)
-        d_kv_comm.commit()
+        next_dk, next_dv = d_kv_comm.send_recv_kv(dk, dv)
 
     d_kv_comm.wait()
 
