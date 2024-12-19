@@ -62,8 +62,7 @@ def ring_flash_attn_forward(
 
         if step + 1 != comm.world_size:
             comm.wait()
-            k = next_k
-            v = next_v
+            k, v = next_k, next_v
 
     out = out.to(q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
@@ -145,13 +144,11 @@ def ring_flash_attn_backward(
                 dv = block_dv_buffer + next_dv
         elif step != 0:
             d_kv_comm.wait()
-            dk = next_dk
-            dv = next_dv
+            dk, dv = next_dk, next_dv
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
-            k = next_k
-            v = next_v
+            k, v = next_k, next_v
 
         next_dk = d_kv_comm.send_recv(dk)
         next_dv = d_kv_comm.send_recv(dv)

@@ -83,8 +83,7 @@ def zigzag_ring_flash_attn_forward(
 
         if step + 1 != comm.world_size:
             comm.wait()
-            k = next_k
-            v = next_v
+            k, v = next_k, next_v
 
     out = out.to(q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
@@ -193,8 +192,7 @@ def zigzag_ring_flash_attn_backward(
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
-            k = next_k
-            v = next_v
+            k, v = next_k, next_v
 
         next_dk = d_kv_comm.send_recv(dk, dk_comm_buffer)
         next_dv = d_kv_comm.send_recv(dv, dv_comm_buffer)

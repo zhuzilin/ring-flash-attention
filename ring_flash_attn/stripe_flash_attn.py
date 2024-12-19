@@ -96,8 +96,7 @@ def stripe_flash_attn_forward(
 
         if step + 1 != comm.world_size:
             comm.wait()
-            k = next_k
-            v = next_v
+            k, v = next_k, next_v
 
     out = out.to(q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
@@ -214,8 +213,7 @@ def stripe_flash_attn_backward(
                 dq[:, 1:] += block_dq_buffer[:, 1:]
             d_kv_comm.wait()
             dk_comm_buffer, dv_comm_buffer = dk, dv
-            dk = next_dk
-            dv = next_dv
+            dk, dv = next_dk, next_dv
 
             if not shift_causal:
                 dk = block_dk_buffer + dk
@@ -226,8 +224,7 @@ def stripe_flash_attn_backward(
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
-            k = next_k
-            v = next_v
+            k, v = next_k, next_v
 
         next_dk = d_kv_comm.send_recv(dk, dk_comm_buffer)
         next_dv = d_kv_comm.send_recv(dv, dv_comm_buffer)
