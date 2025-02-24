@@ -152,47 +152,7 @@ def create_ring_flash_attention_forward(
 
         return attn_output
 
-    def _flash_attention_forward_v2(
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        attention_mask: torch.Tensor,
-        query_length: int,
-        is_causal: bool,
-        dropout: float = 0.0,
-        position_ids: Optional[torch.Tensor] = None,
-        softmax_scale: Optional[float] = None,
-        sliding_window: Optional[int] = None,
-        use_top_left_mask: bool = False,
-        softcap: Optional[float] = None,
-        deterministic: bool = None,
-        cu_seq_lens_q: Optional[torch.LongTensor] = None,
-        cu_seq_lens_k: Optional[torch.LongTensor] = None,
-        max_length_q: Optional[int] = None,
-        max_length_k: Optional[int] = None,
-        target_dtype: Optional[torch.dtype] = None,
-        **kwargs,
-    ):
-        return _flash_attention_forward(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            query_length,
-            is_causal,
-            dropout,
-            position_ids,
-            softmax_scale,
-            sliding_window,
-            use_top_left_mask,
-            softcap,
-            deterministic,
-        )
-
-    return [
-        _flash_attention_forward,
-        _flash_attention_forward_v2,
-    ]
+    return _flash_attention_forward
 
 
 def substitute_hf_flash_attn(process_group: dist.ProcessGroup, heads_k_stride: int):
@@ -201,23 +161,17 @@ def substitute_hf_flash_attn(process_group: dist.ProcessGroup, heads_k_stride: i
         old_flash_attention_forward = (
             transformers.modeling_flash_attention_utils._flash_attention_forward
         )
-        new_flash_attention_forward_list = create_ring_flash_attention_forward(
+        new_flash_attention_forward = create_ring_flash_attention_forward(
             process_group, heads_k_stride
         )
-        for new_flash_attention_forward in new_flash_attention_forward_list:
-            if check_params(old_flash_attention_forward, new_flash_attention_forward):
-                transformers.modeling_flash_attention_utils._flash_attention_forward = (
-                    lambda *args, **kwargs: (
-                        new_flash_attention_forward(*args, **kwargs)
-                        if RING_ATTN_SWITCH
-                        else old_flash_attention_forward(*args, **kwargs)
-                    )
-                )
-                break
-        else:
-            assert (
-                False
-            ), "The signature of the new flash attention forward function does not match the old one."
+        assert check_params(old_flash_attention_forward, new_flash_attention_forward)
+        transformers.modeling_flash_attention_utils._flash_attention_forward = (
+            lambda *args, **kwargs: (
+                new_flash_attention_forward(*args, **kwargs)
+                if RING_ATTN_SWITCH
+                else old_flash_attention_forward(*args, **kwargs)
+            )
+        )
     except:
         raise ValueError(
             f"The current transformer version {transformers.__version__} is not supported. "
