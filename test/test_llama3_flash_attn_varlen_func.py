@@ -16,7 +16,6 @@ def main():
     dtype = torch.bfloat16
     device = torch.device(f"cuda:{rank}")
 
-    batch_size = 1
     nheads = 5
     d = 8
     dropout_p = 0
@@ -28,7 +27,6 @@ def main():
     max_seqlen = (cu_seqlens_tensor[1:] - cu_seqlens_tensor[:-1]).max().item()
     total_length = cu_seqlens[-1]
     local_length = total_length // world_size
-    num_seq = len(cu_seqlens) - 1
 
     assert cu_seqlens_tensor[-1] % world_size == 0
     assert d % 8 == 0
@@ -119,6 +117,8 @@ def main():
     log("dq diff", local_dqkv[:, 0] - llama3_dqkv[:, 0])
     log("dk diff", local_dqkv[:, 1] - llama3_dqkv[:, 1])
     log("dv diff", local_dqkv[:, 2] - llama3_dqkv[:, 2])
+
+    dist.destroy_process_group()
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "compile":

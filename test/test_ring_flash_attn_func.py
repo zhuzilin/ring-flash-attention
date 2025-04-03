@@ -91,6 +91,8 @@ def main():
     log("dk diff", local_dqkv[:, 1] - ring_dqkv[:, 1])
     log("dv diff", local_dqkv[:, 2] - ring_dqkv[:, 2])
 
+    dist.destroy_process_group()
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "compile":
         torch._dynamo.config.capture_scalar_outputs = True

@@ -1,4 +1,3 @@
-import sys
 import torch
 from ring_flash_attn.utils import (
     flatten_varlen_lse,

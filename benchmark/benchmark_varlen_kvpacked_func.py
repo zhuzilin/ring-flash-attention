@@ -249,3 +249,5 @@ if __name__ == "__main__":
             log=True,
             profile=profile,
         )
+
+    dist.destroy_process_group()
