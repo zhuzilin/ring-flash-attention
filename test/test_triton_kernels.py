@@ -1,3 +1,4 @@
+import sys
 import torch
 from ring_flash_attn.utils import (
     flatten_varlen_lse,
@@ -9,7 +10,7 @@ from ring_flash_attn.triton_utils import (
 )
 
 
-if __name__ == "__main__":
+def main():
     device = torch.device("cuda:0")
 
     cu_seqlens = [0, 15, 156, 529]
@@ -38,3 +39,6 @@ if __name__ == "__main__":
         assert torch.all(
             unflatten_lse[i, :, :seqlen] == triton_unflatten_lse[i, :, :seqlen]
         ), f"{unflatten_lse[i, :seqlen]} vs {triton_unflatten_lse[i, :seqlen]}"
+
+if __name__ == "__main__":
+    main()

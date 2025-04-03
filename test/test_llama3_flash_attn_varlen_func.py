@@ -1,3 +1,4 @@
+import sys
 import torch
 import torch.distributed as dist
 from flash_attn import flash_attn_varlen_qkvpacked_func
@@ -7,8 +8,7 @@ from ring_flash_attn import (
 )
 from utils import log, set_seed
 
-
-if __name__ == "__main__":
+def main():
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     set_seed(rank)
@@ -119,3 +119,11 @@ if __name__ == "__main__":
     log("dq diff", local_dqkv[:, 0] - llama3_dqkv[:, 0])
     log("dk diff", local_dqkv[:, 1] - llama3_dqkv[:, 1])
     log("dv diff", local_dqkv[:, 2] - llama3_dqkv[:, 2])
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "compile":
+        torch._dynamo.config.capture_scalar_outputs = True
+        flash_attn_varlen_qkvpacked_func = torch.compile(flash_attn_varlen_qkvpacked_func)
+        llama3_flash_attn_prepare_cu_seqlens = torch.compile(llama3_flash_attn_prepare_cu_seqlens)
+        llama3_flash_attn_varlen_qkvpacked_func = torch.compile(llama3_flash_attn_varlen_qkvpacked_func)
+    main()
