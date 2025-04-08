@@ -28,7 +28,7 @@ def get_half_index(cu_seqlens, *, front: bool):
         else:
             return slice(cu_seqlens[-1] // 2, None)
 
-    index = torch.zeros((cu_seqlens[-1],), dtype=bool)
+    index = torch.zeros((cu_seqlens[-1].item(),), dtype=torch.bool)
     for i in range(len(cu_seqlens) - 1):
         start, end = cu_seqlens[i], cu_seqlens[i + 1]
         if front:
