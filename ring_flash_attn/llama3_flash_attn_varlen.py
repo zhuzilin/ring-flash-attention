@@ -21,11 +21,12 @@ def llama3_flash_attn_prepare_cu_seqlens(
         local_k_slice: slice, the slice of the k that the local q need. Note
             that this may be longer than `total_seq_len // world_size`.
     """
-    total_length = cu_seqlens[-1].item()
+    total_length = cu_seqlens[-1]
     assert total_length % world_size == 0
     length_per_rank = total_length // world_size
     left = torch.searchsorted(cu_seqlens, rank * length_per_rank)
     right = torch.searchsorted(cu_seqlens, (rank + 1) * length_per_rank)
+    length_per_rank = length_per_rank.item()
 
     # after this, cu_seqlens[left:right + 1] contains all the sequence for this rank
     if cu_seqlens[left] != rank * length_per_rank:
