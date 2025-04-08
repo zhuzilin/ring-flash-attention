@@ -1,5 +1,6 @@
 from flash_attn import flash_attn_kvpacked_func
 import os
+import sys
 import torch
 import torch.distributed as dist
 from ring_flash_attn import (
@@ -132,6 +133,11 @@ if __name__ == "__main__":
     forward_only = False
     profile = False
     num_iter = 500 if forward_only else 100
+    compile_func = False
+
+    if len(sys.argv) > 1 and sys.argv[1] == "compile":
+        compile_func = True
+        torch._dynamo.config.capture_scalar_outputs = True
 
     for f in [
         flash_attn_kvpacked_func,
@@ -142,7 +148,10 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
         if rank == 0:
             print(f"# {f.__name__}")
+        f = torch.compile(f) if compile_func else f
         benchmark(f, forward_only=forward_only, num_iter=num_iter, log=False)
         benchmark(
             f, forward_only=forward_only, num_iter=num_iter, log=True, profile=profile
         )
+
+    dist.destroy_process_group()

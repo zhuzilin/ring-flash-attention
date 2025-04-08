@@ -1,3 +1,4 @@
+import sys
 from flash_attn import flash_attn_varlen_qkvpacked_func
 import torch
 import torch.distributed as dist
@@ -30,7 +31,7 @@ def extract_lse(lse, cu_seqlens):
     return values
 
 
-if __name__ == "__main__":
+def main():
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     set_seed(rank)
@@ -38,7 +39,6 @@ if __name__ == "__main__":
     dtype = torch.bfloat16
     device = torch.device(f"cuda:{rank}")
 
-    batch_size = 1
     nheads = 5
     d = 128
     dropout_p = 0
@@ -49,7 +49,6 @@ if __name__ == "__main__":
     cu_seqlens_tensor = torch.tensor(cu_seqlens, dtype=torch.int32, device=device)
     max_seqlen = (cu_seqlens_tensor[1:] - cu_seqlens_tensor[:-1]).max().item()
     total_length = cu_seqlens[-1]
-    num_seq = len(cu_seqlens) - 1
 
     assert torch.all(cu_seqlens_tensor % world_size == 0)
     assert d % 8 == 0
@@ -129,3 +128,12 @@ if __name__ == "__main__":
     log("dq diff", local_dqkv[:, 0] - ring_dqkv[:, 0])
     log("dk diff", local_dqkv[:, 1] - ring_dqkv[:, 1])
     log("dv diff", local_dqkv[:, 2] - ring_dqkv[:, 2])
+
+    dist.destroy_process_group()
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "compile":
+        torch._dynamo.config.capture_scalar_outputs = True
+        flash_attn_varlen_qkvpacked_func = torch.compile(flash_attn_varlen_qkvpacked_func)
+        ring_flash_attn_varlen_qkvpacked_func = torch.compile(ring_flash_attn_varlen_qkvpacked_func)
+    main()
