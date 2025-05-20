@@ -284,6 +284,12 @@ def flash_attention_forward(
     # FA2 always relies on the value set in the module, so remove it if present in kwargs to avoid passing it twice
     kwargs.pop("is_causal", None)
 
+    # Cache original dtype and convert QKV to target dtype
+    original_dtype = query.dtype
+    query = query.to(target_dtype)
+    key = key.to(target_dtype)
+    value = value.to(target_dtype)
+
     attn_output = transformers.modeling_flash_attention_utils._flash_attention_forward(
         query,
         key,
@@ -299,6 +305,7 @@ def flash_attention_forward(
         target_dtype=target_dtype,
         **kwargs,
     )
+    attn_output = attn_output.to(original_dtype)
 
     return attn_output, None
 
