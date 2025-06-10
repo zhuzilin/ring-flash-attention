@@ -13,6 +13,7 @@ This repo implements [RingAttention](https://github.com/lhao499/RingAttention) u
 - [huggingface model adapter](ring_flash_attn/adapters/hf_adapter.py). Here is an example to use the adapter:
 
 ```python
+# torchrun --nproc_per_node=2 this_script.py
 import torch
 from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
 from torch import distributed as dist
