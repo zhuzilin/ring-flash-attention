@@ -10,7 +10,63 @@ This repo implements [RingAttention](https://github.com/lhao499/RingAttention) u
   - `ring_flash_attn_func`: basic ring attention.
   - `zigzag_ring_flash_attn_func`: An more compute balanced version of ring attention, see [issue#2](https://github.com/zhuzilin/ring-flash-attention/issues/2).
   - `stripe_flash_attn_func`: Stripe attention version of `ring_flash_attn_func`, the block size is set to 1 to use flash_attn api, see: https://arxiv.org/abs/2311.09431
-- [huggingface model adapter](ring_flash_attn/adapters/hf_adapter.py). Here is an example to use the adapter: [OpenRLHF/OpenRLHF/pull#439](https://github.com/OpenRLHF/OpenRLHF/pull/439/files).
+- [huggingface model adapter](ring_flash_attn/adapters/hf_adapter.py). Here is an example to use the adapter:
+
+```python
+# torchrun --nproc_per_node=2 this_script.py
+import torch
+from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
+from torch import distributed as dist
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+def main():
+    # Initialize distributed training
+    dist.init_process_group(backend="nccl")
+
+    # Get rank and world size
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+
+    # Set device
+    torch.cuda.set_device(rank)
+    device = torch.device(f"cuda:{rank}")
+
+    # Load model and tokenizer
+    model = AutoModelForCausalLM.from_pretrained(
+        "Qwen/Qwen3-0.6B", attn_implementation="flash_attention_2", torch_dtype=torch.bfloat16, device_map=device
+    )
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+
+    # Create group and substitute flash attention
+    group = dist.new_group(ranks=range(world_size), backend="nccl")
+    substitute_hf_flash_attn(group, heads_k_stride=1)
+
+    # Get the ring attention rank
+    ring_attn_rank = dist.get_rank(group=group)  # only one group for ring attention here: this should be the same as rank
+
+    # Tokenize input and prepare position IDs
+    input_ids = tokenizer(["Lorem ipsum dolor sit", "amet, consectetur adipiscing", "elit, sed do"]).input_ids
+    lengths = [len(seq) for seq in input_ids]
+    input_ids = torch.cat([torch.tensor(seq, device=device) for seq in input_ids]).unsqueeze(0)
+    position_ids = torch.cat([torch.arange(length, device=device) for length in lengths]).unsqueeze(0)
+    
+    # Compute cu_seqlens and update parameters
+    cu_seqlens = torch.cat([torch.tensor([0], device=device), torch.cumsum(torch.tensor(lengths, device=device), dim=0)]).to(torch.int32)
+    update_ring_flash_attn_params(cu_seqlens, group)
+
+    # Chunk input_ids and position_ids
+    input_ids = torch.chunk(input_ids, world_size, dim=1)[ring_attn_rank]
+    position_ids = torch.chunk(position_ids, world_size, dim=1)[ring_attn_rank]
+    
+    output = model(input_ids=input_ids, position_ids=position_ids)
+
+    # Clean up
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()
+```
 
 Note that
 
