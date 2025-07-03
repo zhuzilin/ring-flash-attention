@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ring-flash-attn"
-version = "0.1.5"
+version = "0.1.6"
 authors = [
   { name="zhuzilin", email="zhuzilinallen@gmail.com" },
 ]
