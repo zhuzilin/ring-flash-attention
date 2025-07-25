@@ -6,10 +6,18 @@ import torch
 import torch.distributed as dist
 import transformers
 import transformers.modeling_flash_attention_utils
-from transformers.modeling_flash_attention_utils import (
-    _flash_supports_window_size,
-    is_flash_attn_greater_or_equal,
-)
+try:
+    from transformers.modeling_flash_attention_utils import (
+        _flash_supports_window,
+        is_flash_attn_greater_or_equal,
+    )
+except ImportError:
+    # transformers <= 4.53.x
+    from transformers.modeling_flash_attention_utils import (
+        _flash_supports_window_size as _flash_supports_window,
+        is_flash_attn_greater_or_equal,
+    )
+
 from ..llama3_flash_attn_varlen import (
     llama3_flash_attn_varlen_func,
     llama3_flash_attn_prepare_cu_seqlens,
@@ -111,7 +119,7 @@ def create_ring_flash_attention_forward(
 
         # Assuming 4D tensors, key_states.shape[1] is the key/value sequence length (source length).
         use_sliding_windows = (
-            _flash_supports_window_size
+            _flash_supports_window
             and sliding_window is not None
             and key_states.shape[1] > sliding_window
         )
