@@ -86,7 +86,7 @@ def benchmark(
             local_k_slice_list.append(local_k_slice)
     else:
         max_seqlen_list = [
-            (cu_seqlens[1:] - cu_seqlens[:1]).max().item()
+            (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
             for cu_seqlens in cu_seqlens_list
         ]
 
