@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Attention Visualization Tool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #f8f9fa;
+            --card-bg-color: #ffffff;
+            --text-primary: #212529;
+            --text-secondary: #6c757d;
+            --border-color: #dee2e6;
+            --accent-color: #007bff;
+            --accent-color-hover: #0056b3;
+            --danger-color: #dc3545;
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.05);
+            --shadow-md: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 40px 20px;
+            min-width: 1200px;
+        }
+
+        h1 { font-size: 2.25rem; font-weight: 700; color: #343a40; }
+        h2 { 
+            font-size: 1.75rem; 
+            font-weight: 500;
+            margin: 60px 0 20px 0; 
+            color: var(--text-primary); 
+            border-bottom: 1px solid var(--border-color); 
+            padding-bottom: 10px; 
+            width: 100%; 
+            max-width: 1100px;
+        }
+        h3 { margin-top: 0; color: var(--text-primary); font-size: 1.1rem; font-weight: 500; }
+
+        .container-row {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+        }
+        
+        #dynamic-charts-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            width: 100%;
+        }
+
+        .visualization-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: var(--card-bg-color);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border-color);
+        }
+        
+        .controls-panel {
+            width: 100%;
+            max-width: 1100px;
+            margin: 30px 0 0 0;
+            text-align: center;
+            background: var(--card-bg-color);
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border-color);
+        }
+        .control-group { margin: 10px 0; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 15px;}
+        .controls-panel label { font-size: 1rem; color: var(--text-secondary); font-weight: 500;}
+        .controls-panel input[type="number"] { 
+            font-size: 1rem; 
+            padding: 8px; 
+            width: 80px; 
+            text-align: center; 
+            border: 1px solid var(--border-color); 
+            border-radius: 6px; 
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .controls-panel input[type="number"]:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25);
+        }
+        .controls-panel button { 
+            font-size: 1rem;
+            font-weight: 500;
+            padding: 10px 20px; 
+            cursor: pointer; 
+            background-color: var(--accent-color); 
+            color: white; 
+            border: none; 
+            border-radius: 6px; 
+            transition: background-color 0.2s, transform 0.1s;
+        }
+        .controls-panel button:hover { background-color: var(--accent-color-hover); transform: translateY(-1px); }
+        
+        .slider-group { display: flex; align-items: center; justify-content: center; gap: 15px; margin-top: 15px;}
+        .slider-group #round-display { font-weight: 700; font-size: 1.2em; color: var(--danger-color); display: inline-block; min-width: 20px; }
+        
+        #status-message { color: var(--danger-color); font-weight: 500; min-height: 20px; margin-top: 15px; }
+        
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(var(--grid-size, 16), 1fr);
+            grid-template-rows: repeat(var(--grid-size, 16), 1fr);
+            width: 320px;
+            height: 320px;
+            border: 1px solid var(--border-color);
+            background-color: #fdfdfd; 
+            border-radius: 4px;
+            box-shadow: inset 0 1px 4px rgba(0,0,0,0.05);
+        }
+        
+        .legend { display: flex; justify-content: center; gap: 20px; margin-top: 15px; flex-wrap: wrap; background: var(--bg-color); padding: 10px 20px; border-radius: 8px; border: 1px solid var(--border-color); }
+        .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        .legend-color { width: 15px; height: 15px; border-radius: 3px; }
+        
+        .op-counter { margin-top: 15px; width: 100%; display: flex; flex-direction: column; gap: 5px; font-size: 14px; }
+
+        .neutral-masked { background-color: #dbe0e4; }
+        .static-masked { background-color: #6c757d; }
+        
+        /* Slider Customization */
+        input[type=range] { -webkit-appearance: none; width: 300px; background: transparent; }
+        input[type=range]:focus { outline: none; }
+        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 8px; cursor: pointer; background: #dee2e6; border-radius: 5px; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 18px; width: 18px; border-radius: 50%; background: var(--accent-color); cursor: pointer; margin-top: -5px; transition: background-color 0.2s; }
+        input[type=range]:hover::-webkit-slider-thumb { background: var(--accent-color-hover); }
+        input[type=range]::-moz-range-track { width: 100%; height: 8px; cursor: pointer; background: #dee2e6; border-radius: 5px; }
+        input[type=range]::-moz-range-thumb { height: 18px; width: 18px; border-radius: 50%; background: var(--accent-color); cursor: pointer; border: none; }
+        input[type=range]:hover::-moz-range-thumb { background: var(--accent-color-hover); }
+
+    </style>
+    <style id="dynamic-color-styles"></style>
+</head>
+<body>
+    <h1>Distributed Attention Visualization Tool</h1>
+    
+    <div class="controls-panel">
+        <div class="control-group">
+            <label for="num-devices">Devices (R):</label>
+            <input type="number" id="num-devices" value="4" min="2">
+            <label for="seq-length">Sequence Length (S):</label>
+            <input type="number" id="seq-length" value="16" min="4">
+            <button id="regenerate-btn">Generate / Update</button>
+        </div>
+        <div class="slider-group">
+            <label for="round-slider">Computation Round:</label>
+            <input type="range" id="round-slider" min="0" max="3" value="0">
+            <span id="round-display">0</span>
+        </div>
+        <div id="status-message"></div>
+    </div>
+    
+    <h2>Dynamic Process (Changes with Round)</h2>
+    <div id="dynamic-charts-container">
+        <div class="container-row">
+            <div class="visualization-box">
+                <h3>(a) Ring Attention</h3>
+                <div class="grid-container" id="ring-grid"></div>
+                <div class="op-counter" id="ring-op-counter"></div>
+            </div>
+            <div class="visualization-box">
+                <h3>(b) Striped Attention</h3>
+                <div class="grid-container" id="striped-grid"></div>
+                <div class="op-counter" id="striped-op-counter"></div>
+            </div>
+            <div class="visualization-box">
+                <h3>(c) Zigzag Attention</h3>
+                <div class="grid-container" id="zigzag-grid"></div>
+                <div class="op-counter" id="zigzag-op-counter"></div>
+            </div>
+        </div>
+        <div class="legend" id="dynamic-legend"></div>
+    </div>
+
+    <h2>Static Assignment (Final Responsibility)</h2>
+    <div class="container-row">
+        <div class="visualization-box">
+            <h3>(d) Ring Final Assignment</h3>
+            <div class="grid-container" id="ring-static-grid"></div>
+        </div>
+        <div class="visualization-box">
+            <h3>(e) Striped Final Assignment</h3>
+            <div class="grid-container" id="striped-static-grid"></div>
+        </div>
+        <div class="visualization-box">
+            <h3>(f) Zigzag Final Assignment</h3>
+            <div class="grid-container" id="zigzag-static-grid"></div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // --- DOM Element References ---
+            const numDevicesInput = document.getElementById('num-devices');
+            const seqLengthInput = document.getElementById('seq-length');
+            const regenerateBtn = document.getElementById('regenerate-btn');
+            const statusMessage = document.getElementById('status-message');
+            const slider = document.getElementById('round-slider');
+            const roundDisplay = document.getElementById('round-display');
+            const dynamicColorStyles = document.getElementById('dynamic-color-styles');
+            
+            const containers = {
+                ring: document.getElementById('ring-grid'),
+                striped: document.getElementById('striped-grid'),
+                zigzag: document.getElementById('zigzag-grid'),
+                ringStatic: document.getElementById('ring-static-grid'),
+                stripedStatic: document.getElementById('striped-static-grid'),
+                zigzagStatic: document.getElementById('zigzag-static-grid')
+            };
+            const opCounters = {
+                ring: document.getElementById('ring-op-counter'),
+                striped: document.getElementById('striped-op-counter'),
+                zigzag: document.getElementById('zigzag-op-counter')
+            };
+            const cells = {};
+
+            let SEQ_LENGTH, NUM_DEVICES, BLOCK_SIZE, ZIGZAG_CHUNK_SIZE, COLORS, MASKED_COLORS;
+
+            function generateColorScheme(count) {
+                let css = '';
+                COLORS = [];
+                MASKED_COLORS = [];
+                for (let i = 0; i < count; i++) {
+                    const hue = (i / count) * 360;
+                    const colorClass = `device-${i}`;
+                    const maskedColorClass = `device-${i}-masked`;
+                    COLORS.push(colorClass);
+                    MASKED_COLORS.push(maskedColorClass);
+                    // Using a more pleasant pastel-like color scheme
+                    css += `.${colorClass} { background-color: hsl(${hue}, 85%, 75%); }\n`;
+                    css += `.${maskedColorClass} { background-color: hsla(${hue}, 85%, 75%, 0.4); }\n`;
+                }
+                dynamicColorStyles.innerHTML = css;
+            }
+
+            function createGrid(container, size) {
+                container.innerHTML = '';
+                container.style.setProperty('--grid-size', size);
+                const fragment = document.createDocumentFragment();
+                for (let i = 0; i < size * size; i++) {
+                    const cell = document.createElement('div');
+                    cell.classList.add('grid-cell');
+                    fragment.appendChild(cell);
+                }
+                container.appendChild(fragment);
+                return Array.from(container.children);
+            }
+            
+            function createLegend() {
+                 const container = document.getElementById('dynamic-legend');
+                 container.innerHTML = '';
+                 for (let i = 0; i < NUM_DEVICES; i++) {
+                    const item = document.createElement('div');
+                    item.className = 'legend-item';
+                    item.innerHTML = `<div class="legend-color ${COLORS[i]}"></div> <span>Device ${i}</span>`;
+                    container.appendChild(item);
+                }
+            }
+
+            function displayOpCounts(counterElement, counts) {
+                counterElement.innerHTML = '';
+                let totalOps = 0;
+                for (let i = 0; i < NUM_DEVICES; i++) {
+                    const count = counts[i] || 0;
+                    totalOps += count;
+                    const item = document.createElement('div');
+                    item.className = 'legend-item';
+                    item.innerHTML = `<div class="legend-color ${COLORS[i]}"></div><span>Device ${i}: <strong>${count} ops</strong></span>`;
+                    counterElement.appendChild(item);
+                }
+                 const totalItem = document.createElement('div');
+                 totalItem.className = 'legend-item';
+                 totalItem.style.marginTop = '5px';
+                 totalItem.innerHTML = `<strong>Total: ${totalOps} ops</strong>`;
+                 counterElement.appendChild(totalItem);
+            }
+            
+            function updateDynamicVisualization(round) {
+                roundDisplay.textContent = round;
+                if (!SEQ_LENGTH) return;
+
+                const currentOpCounters = { ring: {}, striped: {}, zigzag: {} };
+
+                for (let i = 0; i < SEQ_LENGTH; i++) {
+                    for (let j = 0; j < SEQ_LENGTH; j++) {
+                        const cellIndex = i * SEQ_LENGTH + j;
+                        const isCausallyMasked = j > i;
+
+                        // Ring
+                        const ringCell = cells.ring[cellIndex];
+                        ringCell.className = 'grid-cell';
+                        const ringQueryDevice = Math.floor(i / BLOCK_SIZE);
+                        const ringKeyOwnerDevice = Math.floor(j / BLOCK_SIZE);
+                        const ringCurrentKeyDeviceOwner = (ringQueryDevice - round + NUM_DEVICES) % NUM_DEVICES;
+                        const isRingCellAssigned = ringKeyOwnerDevice === ringCurrentKeyDeviceOwner;
+
+                        if (isRingCellAssigned) {
+                            ringCell.classList.add(isCausallyMasked ? MASKED_COLORS[ringQueryDevice] : COLORS[ringQueryDevice]);
+                            if (!isCausallyMasked) {
+                                currentOpCounters.ring[ringQueryDevice] = (currentOpCounters.ring[ringQueryDevice] || 0) + 1;
+                            }
+                        } else if (isCausallyMasked) {
+                            ringCell.classList.add('neutral-masked');
+                        }
+
+                        // Striped
+                        const stripedCell = cells.striped[cellIndex];
+                        stripedCell.className = 'grid-cell';
+                        const stripedQueryDevice = i % NUM_DEVICES;
+                        const stripedKeyOwnerDevice = j % NUM_DEVICES;
+                        const stripedCurrentKeyDeviceOwner = (stripedQueryDevice - round + NUM_DEVICES) % NUM_DEVICES;
+                        const isStripedCellAssigned = stripedKeyOwnerDevice === stripedCurrentKeyDeviceOwner;
+
+                        if (isStripedCellAssigned) {
+                            stripedCell.classList.add(isCausallyMasked ? MASKED_COLORS[stripedQueryDevice] : COLORS[stripedQueryDevice]);
+                             if (!isCausallyMasked) {
+                                currentOpCounters.striped[stripedQueryDevice] = (currentOpCounters.striped[stripedQueryDevice] || 0) + 1;
+                            }
+                        } else if (isCausallyMasked) {
+                            stripedCell.classList.add('neutral-masked');
+                        }
+                        
+                        // Zigzag
+                        const getZigzagOwner = (index) => {
+                            const chunkIdx = Math.floor(index / ZIGZAG_CHUNK_SIZE);
+                            return chunkIdx < NUM_DEVICES ? chunkIdx : (2 * NUM_DEVICES - 1 - chunkIdx);
+                        };
+                        const zigzagCell = cells.zigzag[cellIndex];
+                        zigzagCell.className = 'grid-cell';
+                        const zigzagQueryDevice = getZigzagOwner(i);
+                        const zigzagKeyOwnerDevice = getZigzagOwner(j);
+                        const zigzagCurrentKeyDeviceOwner = (zigzagQueryDevice - round + NUM_DEVICES) % NUM_DEVICES;
+                        const isZigzagCellAssigned = zigzagKeyOwnerDevice === zigzagCurrentKeyDeviceOwner;
+
+                        if (isZigzagCellAssigned) {
+                            zigzagCell.classList.add(isCausallyMasked ? MASKED_COLORS[zigzagQueryDevice] : COLORS[zigzagQueryDevice]);
+                            if (!isCausallyMasked) {
+                                currentOpCounters.zigzag[zigzagQueryDevice] = (currentOpCounters.zigzag[zigzagQueryDevice] || 0) + 1;
+                            }
+                        } else if (isCausallyMasked) {
+                            zigzagCell.classList.add('neutral-masked');
+                        }
+                    }
+                }
+                displayOpCounts(opCounters.ring, currentOpCounters.ring);
+                displayOpCounts(opCounters.striped, currentOpCounters.striped);
+                displayOpCounts(opCounters.zigzag, currentOpCounters.zigzag);
+            }
+
+            function drawStaticAssignment() {
+                if (!SEQ_LENGTH) return;
+                for (let i = 0; i < SEQ_LENGTH; i++) {
+                    for (let j = 0; j < SEQ_LENGTH; j++) {
+                        const cellIndex = i * SEQ_LENGTH + j;
+                        const isMasked = j > i;
+                        
+                        // Ring Static
+                        const ringOwnerDevice = Math.floor(i / BLOCK_SIZE);
+                        cells.ringStatic[cellIndex].className = 'grid-cell';
+                        cells.ringStatic[cellIndex].classList.add(isMasked ? 'static-masked' : COLORS[ringOwnerDevice]);
+
+                        // Striped Static
+                        const stripedOwnerDevice = i % NUM_DEVICES;
+                        cells.stripedStatic[cellIndex].className = 'grid-cell';
+                        cells.stripedStatic[cellIndex].classList.add(isMasked ? 'static-masked' : COLORS[stripedOwnerDevice]);
+                        
+                        // Zigzag Static
+                        const getZigzagOwner = (index) => {
+                            const chunkIdx = Math.floor(index / ZIGZAG_CHUNK_SIZE);
+                            return chunkIdx < NUM_DEVICES ? chunkIdx : (2 * NUM_DEVICES - 1 - chunkIdx);
+                        };
+                        const zigzagOwnerDevice = getZigzagOwner(i);
+                        cells.zigzagStatic[cellIndex].className = 'grid-cell';
+                        cells.zigzagStatic[cellIndex].classList.add(isMasked ? 'static-masked' : COLORS[zigzagOwnerDevice]);
+                    }
+                }
+            }
+
+            function regenerateAll() {
+                const numDev = parseInt(numDevicesInput.value);
+                const seqLen = parseInt(seqLengthInput.value);
+
+                // --- Validation ---
+                statusMessage.textContent = '';
+                if (seqLen % (2 * numDev) !== 0) {
+                    statusMessage.textContent = `Error: Sequence Length (${seqLen}) must be divisible by (2 * Devices = ${2*numDev}) to ensure even chunking for all strategies.`;
+                    return;
+                }
+                
+                // --- Update global variables ---
+                NUM_DEVICES = numDev;
+                SEQ_LENGTH = seqLen;
+                BLOCK_SIZE = SEQ_LENGTH / NUM_DEVICES;
+                ZIGZAG_CHUNK_SIZE = SEQ_LENGTH / (2 * NUM_DEVICES);
+                
+                // --- Regenerate UI components ---
+                generateColorScheme(NUM_DEVICES);
+                for (const key in containers) {
+                    cells[key] = createGrid(containers[key], SEQ_LENGTH);
+                }
+                createLegend();
+                
+                // --- Update controls ---
+                slider.max = NUM_DEVICES - 1;
+                if (parseInt(slider.value) >= NUM_DEVICES) {
+                    slider.value = NUM_DEVICES - 1;
+                }
+                
+                // --- Redraw everything ---
+                drawStaticAssignment();
+                updateDynamicVisualization(parseInt(slider.value));
+            }
+
+            // --- Event Listeners ---
+            regenerateBtn.addEventListener('click', regenerateAll);
+            slider.addEventListener('input', (event) => {
+                updateDynamicVisualization(parseInt(event.target.value));
+            });
+
+            // --- Initial Generation ---
+            regenerateAll();
+        });
+    </script>
+</body>
+</html>
