@@ -20,6 +20,9 @@ from ..llama3_flash_attn_varlen import (
     llama3_flash_attn_varlen_func,
     llama3_flash_attn_prepare_cu_seqlens,
 )
+from ..zigzag_llama3_flash_attn_varlen import (
+    zigzag_llama3_flash_attn_varlen_func,
+)
 
 try:
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -29,6 +32,7 @@ except:
 
 DATA_PARAMS = {}
 RING_ATTN_SWITCH = True
+USE_ZIGZAG_LLAMA3 = False  # Toggle between llama3 and zigzag_llama3
 
 
 def check_params(f1, f2):
@@ -42,6 +46,10 @@ def update_ring_flash_attn_params(
 ):
     world_size = dist.get_world_size(group=process_group)
     rank = dist.get_rank(group=process_group)
+
+    # Calculate ORIGINAL max_seqlen (needed for zigzag_llama3)
+    original_max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+
     (
         cu_seqlens_q,
         cu_seqlens_k,
@@ -49,13 +57,33 @@ def update_ring_flash_attn_params(
         max_seqlen_k,
         local_k_slice,
     ) = llama3_flash_attn_prepare_cu_seqlens(cu_seqlens, True, rank, world_size)
+
+    # For zigzag_llama3, prepare local cu_seqlens for Q
+    if USE_ZIGZAG_LLAMA3:
+        local_cu_seqlens_q = []
+        offset = 0
+        for i in range(len(cu_seqlens) - 1):
+            seq_len = (cu_seqlens[i+1] - cu_seqlens[i]).item()
+            local_seq_len = seq_len // world_size  # Each rank gets 2 chunks
+            local_cu_seqlens_q.append(offset)
+            offset += local_seq_len
+        local_cu_seqlens_q.append(offset)
+        local_cu_seqlens_q_tensor = torch.tensor(
+            local_cu_seqlens_q, dtype=torch.int32, device=cu_seqlens.device
+        )
+    else:
+        local_cu_seqlens_q_tensor = cu_seqlens_q
+
     DATA_PARAMS.update(
         {
-            "cu_seqlens_q": cu_seqlens_q,
-            "cu_seqlens_k": cu_seqlens_k,
-            "max_seqlen_q": max_seqlen_q,
-            "max_seqlen_k": max_seqlen_k,
+            "cu_seqlens_q": local_cu_seqlens_q_tensor,
+            "cu_seqlens_k": cu_seqlens if USE_ZIGZAG_LLAMA3 else cu_seqlens_k,  # Use global cu_seqlens for K in zigzag
+            "max_seqlen_q": original_max_seqlen if USE_ZIGZAG_LLAMA3 else max_seqlen_q,
+            "max_seqlen_k": original_max_seqlen if USE_ZIGZAG_LLAMA3 else max_seqlen_k,
             "local_k_slice": local_k_slice,
+            "global_cu_seqlens": cu_seqlens,  # Store original for zigzag extraction
+            "rank": rank,
+            "world_size": world_size,
         }
     )
 
@@ -63,6 +91,44 @@ def update_ring_flash_attn_params(
 def use_ring_attn(flag):
     global RING_ATTN_SWITCH
     RING_ATTN_SWITCH = flag
+
+
+def use_zigzag_llama3(flag):
+    """Toggle between llama3 and zigzag_llama3 implementations."""
+    global USE_ZIGZAG_LLAMA3
+    USE_ZIGZAG_LLAMA3 = flag
+
+
+def extract_local_zigzag(value, cu_seqlens, rank, world_size):
+    """Extract local zigzag-distributed portion for this rank.
+
+    Each sequence is split into 2*world_size chunks.
+    GPU rank r gets: chunk[r] + chunk[2*world_size - 1 - r]
+
+    This creates the interleaved zigzag pattern where each GPU
+    gets tokens from both beginning and end of sequences.
+    """
+    local_values = []
+    for i in range(len(cu_seqlens) - 1):
+        start, end = cu_seqlens[i].item(), cu_seqlens[i + 1].item()
+        seq_len = end - start
+        # Split sequence into 2*world_size chunks
+        chunk_size = seq_len // (2 * world_size)
+
+        # Get early chunk (rank r gets chunk r)
+        early_start = start + rank * chunk_size
+        early_end = early_start + chunk_size
+        early_chunk = value[early_start:early_end]
+
+        # Get late chunk (rank r gets chunk 2*world_size-1-r)
+        late_idx = 2 * world_size - 1 - rank
+        late_start = start + late_idx * chunk_size
+        late_end = late_start + chunk_size
+        late_chunk = value[late_start:late_end]
+
+        local_values.extend([early_chunk, late_chunk])
+
+    return torch.cat(local_values, dim=0).contiguous()
 
 
 def create_ring_flash_attention_forward(
@@ -143,21 +209,54 @@ def create_ring_flash_attention_forward(
         batch_size = query_states.size(0)
         assert batch_size == 1, "varlen data should be processed in advance."
 
-        attn_output = llama3_flash_attn_varlen_func(
-            query_states.squeeze(dim=0),
-            key_states.squeeze(dim=0),
-            value_states.squeeze(dim=0),
-            cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
-            cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
-            max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
-            max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
-            heads_k_stride=heads_k_stride,
-            local_k_slice=DATA_PARAMS["local_k_slice"],
-            dropout_p=dropout,
-            softmax_scale=softmax_scale,
-            causal=causal,
-            **flash_kwargs,
-        )
+        # Extract inputs (remove batch dimension)
+        q = query_states.squeeze(dim=0)
+        k = key_states.squeeze(dim=0)
+        v = value_states.squeeze(dim=0)
+
+        # For zigzag_llama3, extract local zigzag portions
+        if USE_ZIGZAG_LLAMA3:
+            q = extract_local_zigzag(
+                q, DATA_PARAMS["global_cu_seqlens"],
+                DATA_PARAMS["rank"], DATA_PARAMS["world_size"]
+            )
+            k = extract_local_zigzag(
+                k, DATA_PARAMS["global_cu_seqlens"],
+                DATA_PARAMS["rank"], DATA_PARAMS["world_size"]
+            )
+            v = extract_local_zigzag(
+                v, DATA_PARAMS["global_cu_seqlens"],
+                DATA_PARAMS["rank"], DATA_PARAMS["world_size"]
+            )
+
+            attn_output = zigzag_llama3_flash_attn_varlen_func(
+                q, k, v,
+                cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
+                cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
+                max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
+                max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
+                heads_k_stride=heads_k_stride,
+                local_k_slice=DATA_PARAMS["local_k_slice"],
+                dropout_p=dropout,
+                softmax_scale=softmax_scale,
+                causal=causal,
+                n_chunks=2,
+                **flash_kwargs,
+            )
+        else:
+            attn_output = llama3_flash_attn_varlen_func(
+                q, k, v,
+                cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
+                cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
+                max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
+                max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
+                heads_k_stride=heads_k_stride,
+                local_k_slice=DATA_PARAMS["local_k_slice"],
+                dropout_p=dropout,
+                softmax_scale=softmax_scale,
+                causal=causal,
+                **flash_kwargs,
+            )
 
         attn_output = attn_output.unsqueeze(dim=0)
 
