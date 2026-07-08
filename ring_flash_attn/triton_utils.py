@@ -135,3 +135,53 @@ def unflatten_varlen_lse(lse, cu_seqlens, max_seqlen: int):
             BLOCK_M,
         )
     return output
+
+
+@triton.jit
+def merge_kernel(
+    OUT,
+    LSE,
+    BLOCK_OUT,
+    BLOCK_LSE,
+    n_rows,
+    D: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    pid = tl.program_id(axis=0)
+    rows = pid * BLOCK_M + tl.arange(0, BLOCK_M)
+    cols = tl.arange(0, BLOCK_D)
+    rmask = rows < n_rows
+    mask = rmask[:, None] & (cols[None, :] < D)
+    o = tl.load(OUT + rows[:, None] * D + cols[None, :], mask=mask, other=0.0)
+    bo = tl.load(BLOCK_OUT + rows[:, None] * D + cols[None, :], mask=mask, other=0.0).to(tl.float32)
+    lse = tl.load(LSE + rows, mask=rmask, other=0.0)
+    blse = tl.load(BLOCK_LSE + rows, mask=rmask, other=0.0)
+    # out = out - sigmoid(blse - lse) * (out - bo);  lse = lse + softplus(blse - lse)
+    s = blse - lse
+    sig = tl.sigmoid(s)
+    o = o * (1.0 - sig[:, None]) + bo * sig[:, None]
+    lse = lse + tl.maximum(s, 0.0) + tl.log(1.0 + tl.exp(-tl.abs(s)))
+    tl.store(OUT + rows[:, None] * D + cols[None, :], o, mask=mask)
+    tl.store(LSE + rows, lse, mask=rmask)
+
+
+def merge_out_and_lse(out, lse, block_out, block_lse):
+    """Fused online-softmax merge, in place on the fp32 accumulators.
+
+    out/lse are the contiguous fp32 accumulators ([..., D] and [..., 1]);
+    block_out ([..., D]) and block_lse ([..., H, S]) are the new flash-attn
+    block. Equivalent to utils._update_out_and_lse but in one kernel.
+    """
+    D = out.shape[-1]
+    n_rows = out.numel() // D
+    blse = block_lse.transpose(-2, -1).reshape(-1).contiguous()
+    BLOCK_D = triton.next_power_of_2(D)
+    BLOCK_M = max(1, 8192 // BLOCK_D)
+    grid = (triton.cdiv(n_rows, BLOCK_M),)
+    with torch.cuda.device(out.device.index):
+        merge_kernel[grid](
+            out, lse, block_out, blse, n_rows,
+            D=D, BLOCK_M=BLOCK_M, BLOCK_D=BLOCK_D,
+        )
+    return out, lse
