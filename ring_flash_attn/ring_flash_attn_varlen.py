@@ -42,38 +42,39 @@ def ring_flash_attn_varlen_forward(
     lse = None
     next_k, next_v = None, None
 
+    # step-invariant flash-attn kwargs, built once (only k/v/causal change)
+    params = get_default_args(_flash_attn_varlen_forward).copy()
+    params.update(
+        {
+            "q": q,
+            "cu_seqlens_q": cu_seqlens,
+            "cu_seqlens_k": cu_seqlens,
+            "max_seqlen_q": max_seqlen,
+            "max_seqlen_k": max_seqlen,
+            "dropout_p": dropout_p,
+            "softmax_scale": softmax_scale,
+            "alibi_slopes": alibi_slopes,
+            "return_softmax": True and dropout_p > 0,
+        }
+    )
+    if "window_size" in params:
+        params["window_size"] = window_size
+    else:
+        params["window_size_left"], params["window_size_right"] = window_size
+
+    recv_buffers = (
+        [(torch.empty_like(k), torch.empty_like(v)),
+         (torch.empty_like(k), torch.empty_like(v))]
+        if comm.world_size > 1
+        else None
+    )
+
     old_lse = False
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k, next_v = comm.send_recv_kv(k, v)
+            next_k, next_v = comm.send_recv_kv(k, v, *recv_buffers[step % 2])
         if not causal or step <= comm.rank:
-            params = get_default_args(_flash_attn_varlen_forward).copy()
-            params.update(
-                {
-                    "q": q,
-                    "k": k,
-                    "v": v,
-                    "cu_seqlens_q": cu_seqlens,
-                    "cu_seqlens_k": cu_seqlens,
-                    "max_seqlen_q": max_seqlen,
-                    "max_seqlen_k": max_seqlen,
-                    "dropout_p": dropout_p,
-                    "softmax_scale": softmax_scale,
-                    "causal": causal and step == 0,
-                    "alibi_slopes": alibi_slopes,
-                    "return_softmax": True and dropout_p > 0,
-                }
-            )
-            if "window_size" in params:
-                params.update({"window_size": window_size})
-            else:
-                params.update(
-                    {
-                        "window_size_left": window_size[0],
-                        "window_size_right": window_size[1],
-                    }
-                )
-
+            params.update({"k": k, "v": v, "causal": causal and step == 0})
             outputs = _flash_attn_varlen_forward(**params)
             if len(outputs) == 8:
                 block_out, _, _, _, _, block_lse, _, _ = outputs
@@ -121,51 +122,51 @@ def ring_flash_attn_varlen_backward(
     d_kv_comm = RingComm(process_group)
     dq, dk, dv = None, None, None
     next_dk, next_dv = None, None
+    dk_comm_buffer, dv_comm_buffer = None, None
 
     block_dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
     block_dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
     block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
 
-    next_dk, next_dv = None, None
+    # step-invariant flash-attn kwargs, built once (only k/v/causal change)
+    params = get_default_args(_flash_attn_varlen_backward).copy()
+    params.update(
+        {
+            "dout": dout,
+            "q": q,
+            "out": out,
+            "softmax_lse": softmax_lse,
+            "dq": block_dq_buffer,
+            "dk": block_dk_buffer,
+            "dv": block_dv_buffer,
+            "cu_seqlens_q": cu_seqlens,
+            "cu_seqlens_k": cu_seqlens,
+            "max_seqlen_q": max_seqlen,
+            "max_seqlen_k": max_seqlen,
+            "dropout_p": dropout_p,
+            "softmax_scale": softmax_scale,
+            "alibi_slopes": alibi_slopes,
+            "deterministic": deterministic,
+        }
+    )
+    if "window_size" in params:
+        params["window_size"] = window_size
+    else:
+        params["window_size_left"], params["window_size_right"] = window_size
+
     next_k, next_v = None, None
+    kv_buffers = (
+        [(torch.empty_like(k), torch.empty_like(v)),
+         (torch.empty_like(k), torch.empty_like(v))]
+        if kv_comm.world_size > 1
+        else None
+    )
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k, next_v = kv_comm.send_recv_kv(k, v)
+            next_k, next_v = kv_comm.send_recv_kv(k, v, *kv_buffers[step % 2])
 
         if step <= kv_comm.rank or not causal:
-            bwd_causal = causal and step == 0
-            params = get_default_args(_flash_attn_varlen_backward).copy()
-            params.update(
-                {
-                    "dout": dout,
-                    "q": q,
-                    "k": k,
-                    "v": v,
-                    "out": out,
-                    "softmax_lse": softmax_lse,
-                    "dq": block_dq_buffer,
-                    "dk": block_dk_buffer,
-                    "dv": block_dv_buffer,
-                    "cu_seqlens_q": cu_seqlens,
-                    "cu_seqlens_k": cu_seqlens,
-                    "max_seqlen_q": max_seqlen,
-                    "max_seqlen_k": max_seqlen,
-                    "dropout_p": dropout_p,
-                    "softmax_scale": softmax_scale,
-                    "causal": bwd_causal,
-                    "alibi_slopes": alibi_slopes,
-                    "deterministic": deterministic,
-                }
-            )
-            if "window_size" in params:
-                params.update({"window_size": window_size})
-            else:
-                params.update(
-                    {
-                        "window_size_left": window_size[0],
-                        "window_size_right": window_size[1],
-                    }
-                )
+            params.update({"k": k, "v": v, "causal": causal and step == 0})
             _flash_attn_varlen_backward(**params)
 
             if dq is None:
@@ -175,21 +176,24 @@ def ring_flash_attn_varlen_backward(
             else:
                 dq += block_dq_buffer
                 d_kv_comm.wait()
-                dk = block_dk_buffer + next_dk
-                dv = block_dv_buffer + next_dv
+                dk_comm_buffer, dv_comm_buffer = dk, dv
+                dk, dv = next_dk, next_dv
+                dk += block_dk_buffer
+                dv += block_dv_buffer
         elif step != 0:
             d_kv_comm.wait()
+            dk_comm_buffer, dv_comm_buffer = dk, dv
             dk, dv = next_dk, next_dv
 
         if step + 1 != kv_comm.world_size:
             kv_comm.wait()
             k, v = next_k, next_v
 
-        next_dk, next_dv = d_kv_comm.send_recv_kv(dk, dv)
+        next_dk, next_dv = d_kv_comm.send_recv_kv(dk, dv, dk_comm_buffer, dv_comm_buffer)
 
     d_kv_comm.wait()
 
-    return dq.to(torch.bfloat16), next_dk.to(q.dtype), next_dv.to(q.dtype)
+    return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
 
 class RingFlashAttnVarlenFunc(torch.autograd.Function):

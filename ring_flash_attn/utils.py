@@ -9,6 +9,11 @@ from functools import cache
 
 __all__ = ["update_out_and_lse", "RingComm", "get_default_args"]
 
+try:
+    from .triton_utils import merge_out_and_lse
+except Exception:
+    merge_out_and_lse = None
+
 
 @cache
 def _get_default_args(func):
@@ -68,6 +73,8 @@ def update_out_and_lse(
             slice_out, slice_lse, block_out, block_lse
         )
         out[slice_], lse[slice_] = slice_out, slice_lse
+    elif merge_out_and_lse is not None and out.is_contiguous() and lse.is_contiguous():
+        out, lse = merge_out_and_lse(out, lse, block_out, block_lse)
     else:
         out, lse = _update_out_and_lse(out, lse, block_out, block_lse)
     return out, lse

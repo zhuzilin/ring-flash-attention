@@ -26,30 +26,24 @@ def zigzag_ring_flash_attn_forward(
     lse = None
     next_k, next_v = None, None
 
+    # step-invariant flash-attn kwargs, built once (only q/k/v/causal change)
+    fwd_params = get_default_args(_flash_attn_forward).copy()
+    fwd_params.update(
+        {
+            "dropout_p": dropout_p,
+            "softmax_scale": softmax_scale,
+            "alibi_slopes": alibi_slopes,
+            "return_softmax": True and dropout_p > 0,
+        }
+    )
+    if "window_size" in fwd_params:
+        fwd_params["window_size"] = window_size
+    else:
+        fwd_params["window_size_left"], fwd_params["window_size_right"] = window_size
+
     def forward(q, k, v, causal):
-        params = get_default_args(_flash_attn_forward).copy()
-        params.update(
-            {
-                "q": q,
-                "k": k,
-                "v": v,
-                "dropout_p": dropout_p,
-                "softmax_scale": softmax_scale,
-                "causal": causal,
-                "alibi_slopes": alibi_slopes,
-                "return_softmax": True and dropout_p > 0,
-            }
-        )
-        if "window_size" in params:
-            params.update({"window_size": window_size})
-        else:
-            params.update(
-                {
-                    "window_size_left": window_size[0],
-                    "window_size_right": window_size[1],
-                }
-            )
-        outputs = _flash_attn_forward(**params)
+        fwd_params.update({"q": q, "k": k, "v": v, "causal": causal})
+        outputs = _flash_attn_forward(**fwd_params)
         if len(outputs) == 8:
             block_out, _, _, _, _, block_lse, _, _ = outputs
         else:
@@ -57,9 +51,16 @@ def zigzag_ring_flash_attn_forward(
             block_out, block_lse, _, _ = outputs
         return block_out, block_lse
 
+    recv_buffers = (
+        [(torch.empty_like(k), torch.empty_like(v)),
+         (torch.empty_like(k), torch.empty_like(v))]
+        if comm.world_size > 1
+        else None
+    )
+
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
-            next_k, next_v = comm.send_recv_kv(k, v)
+            next_k, next_v = comm.send_recv_kv(k, v, *recv_buffers[step % 2])
 
         if step == 0:
             block_out, block_lse = forward(q, k, v, causal=True)
@@ -122,11 +123,25 @@ def zigzag_ring_flash_attn_backward(
     dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
     dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
 
+    # step-invariant flash-attn kwargs, built once
+    bwd_params = get_default_args(_flash_attn_backward).copy()
+    bwd_params.update(
+        {
+            "dropout_p": dropout_p,
+            "softmax_scale": softmax_scale,
+            "alibi_slopes": alibi_slopes,
+            "deterministic": deterministic,
+        }
+    )
+    if "window_size" in bwd_params:
+        bwd_params["window_size"] = window_size
+    else:
+        bwd_params["window_size_left"], bwd_params["window_size_right"] = window_size
+
     def backward(dout, q, k, v, out, softmax_lse, causal):
         seqlen_q = q.shape[1]
         seqlen_kv = k.shape[1]
-        params = get_default_args(_flash_attn_backward).copy()
-        params.update(
+        bwd_params.update(
             {
                 "dout": dout,
                 "q": q,
@@ -137,27 +152,20 @@ def zigzag_ring_flash_attn_backward(
                 "dq": dq_buffer[:, :seqlen_q],
                 "dk": dk_buffer[:, :seqlen_kv],
                 "dv": dv_buffer[:, :seqlen_kv],
-                "dropout_p": dropout_p,
-                "softmax_scale": softmax_scale,
                 "causal": causal,
-                "alibi_slopes": alibi_slopes,
-                "deterministic": deterministic,
             }
         )
-        if "window_size" in params:
-            params.update({"window_size": window_size})
-        else:
-            params.update(
-                {
-                    "window_size_left": window_size[0],
-                    "window_size_right": window_size[1],
-                }
-            )
-        _flash_attn_backward(**params)
+        _flash_attn_backward(**bwd_params)
 
+    kv_buffers = (
+        [(torch.empty_like(k), torch.empty_like(v)),
+         (torch.empty_like(k), torch.empty_like(v))]
+        if kv_comm.world_size > 1
+        else None
+    )
     for step in range(kv_comm.world_size):
         if step + 1 != kv_comm.world_size:
-            next_k, next_v = kv_comm.send_recv_kv(k, v)
+            next_k, next_v = kv_comm.send_recv_kv(k, v, *kv_buffers[step % 2])
 
         if step == 0:
             backward(dout, q, k, v, out, softmax_lse, causal=True)
